@@ -1,0 +1,16 @@
+{
+  "name": "printerwebsite2-server",
+  "version": "1.0.0",
+  "description": "Static Node server for printerWebsite2.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
