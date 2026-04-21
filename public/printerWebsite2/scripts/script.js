@@ -96,6 +96,19 @@ function statusBadge(status) {
   return `<span class="badge ${statusClass}">${escapeHtml(statusText)}</span>`;
 }
 
+function tonerBadge(status) {
+  const statusText = String(status || "Unknown");
+  const statusClass = statusText.toLowerCase().startsWith("low")
+    ? "bg-danger"
+    : statusText.toLowerCase().startsWith("check")
+      ? "bg-warning text-dark"
+      : statusText.toLowerCase().startsWith("ok")
+        ? "bg-success"
+        : "bg-secondary";
+
+  return `<span class="badge ${statusClass}">${escapeHtml(statusText)}</span>`;
+}
+
 function statusCheckedTitle(printer) {
   if (!printer.statusCheckedAt) {
     return "";
@@ -104,6 +117,41 @@ function statusCheckedTitle(printer) {
   const checkedAt = new Date(printer.statusCheckedAt).toLocaleString();
 
   return ` title="Last checked ${escapeHtml(checkedAt)}"`;
+}
+
+function tonerCheckedTitle(printer) {
+  if (!printer.tonerCheckedAt && !printer.tonerSupplies?.length) {
+    return "";
+  }
+
+  const supplyLines = Array.isArray(printer.tonerSupplies)
+    ? printer.tonerSupplies.map((supply) => {
+        const level = Number.isFinite(supply.percent) ? `${supply.percent}%` : "level unknown";
+
+        return `${supply.name}: ${level}`;
+      })
+    : [];
+  const checkedAt = printer.tonerCheckedAt
+    ? `Last checked ${new Date(printer.tonerCheckedAt).toLocaleString()}`
+    : "";
+  const title = [...supplyLines, checkedAt].filter(Boolean).join("\n");
+
+  return title ? ` title="${escapeHtml(title)}"` : "";
+}
+
+function setInputValue(form, name, value, options = {}) {
+  const input = form.elements[name];
+
+  if (!input || value === undefined || value === null || value === "") {
+    return false;
+  }
+
+  if (options.onlyIfEmpty && input.value.trim()) {
+    return false;
+  }
+
+  input.value = typeof value === "string" ? value : JSON.stringify(value);
+  return true;
 }
 
 function renderSiteLocationSelect(selectedLocationId) {
@@ -203,7 +251,8 @@ function renderTable() {
             <th scope="col">Department</th>
             <th scope="col">Manufacturer</th>
             <th scope="col">Status</th>
-            <th scope="col"></th>
+            <th scope="col" class="toner-col">Toner</th>
+            <th scope="col" class="action-col"></th>
           </tr>
         </thead>
         <tbody>
@@ -220,7 +269,8 @@ function renderTable() {
                   <td>${escapeHtml(printer.department)}</td>
                   <td>${escapeHtml(printer.manufacturer)}</td>
                   <td${statusCheckedTitle(printer)}>${statusBadge(printer.status)}</td>
-                  <td>
+                  <td class="toner-cell"${tonerCheckedTitle(printer)}>${tonerBadge(printer.tonerStatus)}</td>
+                  <td class="action-cell">
                     <button type="button" class="btn btn-success edit-printer-button" data-printer-id="${printer.id}" title="Edit printer">
                       <i class="fa-solid fa-pen"></i>
                     </button>
@@ -279,7 +329,15 @@ function renderForm(printerId = "") {
           `,
         )
         .join("")}
+      <input type="hidden" id="tonerStatus" name="tonerStatus" value="${escapeHtml(printer.tonerStatus)}">
+      <input type="hidden" id="tonerSupplies" name="tonerSupplies" value="${escapeHtml(JSON.stringify(printer.tonerSupplies || []))}">
+      <input type="hidden" id="tonerCheckedAt" name="tonerCheckedAt" value="${escapeHtml(printer.tonerCheckedAt)}">
+      <input type="hidden" id="statusCheckedAt" name="statusCheckedAt" value="${escapeHtml(printer.statusCheckedAt)}">
+      <div class="detect-status" id="detect-printer-status"></div>
       <div class="button-con">
+        <button type="button" class="btn btn-info" id="detect-printer-button">
+          <i class="fa-solid fa-magnifying-glass"></i> Detect
+        </button>
         <button type="submit" class="btn btn-success">Submit</button>
         <button type="button" class="btn btn-primary" id="back-button">Back</button>
         ${
@@ -296,10 +354,59 @@ function renderForm(printerId = "") {
     savePrinter(printerId);
   });
 
+  document.querySelector("#detect-printer-button").addEventListener("click", detectPrinterFromForm);
   document.querySelector("#back-button").addEventListener("click", renderTable);
 
   if (isEditing) {
     document.querySelector("#delete-button").addEventListener("click", () => deletePrinter(printerId));
+  }
+}
+
+async function detectPrinterFromForm() {
+  const form = document.querySelector("#printer-form");
+  const detectButton = document.querySelector("#detect-printer-button");
+  const statusElement = document.querySelector("#detect-printer-status");
+  const ip = form.elements.ip.value.trim();
+
+  if (!ip) {
+    statusElement.textContent = "Enter an IP address first.";
+    return;
+  }
+
+  detectButton.disabled = true;
+  statusElement.textContent = "Detecting printer...";
+
+  try {
+    const result = await apiRequest("/api/printers/detect", {
+      method: "POST",
+      body: JSON.stringify({ ip }),
+    });
+    const fields = result.fields || {};
+    const updatedFields = [
+      setInputValue(form, "name", fields.name, { onlyIfEmpty: true }) && "name",
+      setInputValue(form, "model", fields.model) && "model",
+      setInputValue(form, "serialNo", fields.serialNo) && "serial number",
+      setInputValue(form, "manufacturer", fields.manufacturer) && "manufacturer",
+      setInputValue(form, "status", fields.status) && "status",
+      setInputValue(form, "tonerStatus", fields.tonerStatus) && "toner",
+      setInputValue(form, "tonerSupplies", fields.tonerSupplies) && "toner supplies",
+      setInputValue(form, "tonerCheckedAt", fields.tonerCheckedAt) && "toner checked time",
+      setInputValue(form, "statusCheckedAt", fields.statusCheckedAt) && "status checked time",
+    ].filter(Boolean);
+
+    if (!result.online) {
+      statusElement.textContent = "Printer did not respond to ping.";
+      return;
+    }
+
+    statusElement.textContent = updatedFields.length
+      ? `Detected ${updatedFields.join(", ")}.`
+      : "Printer is online, but no extra fields were detected.";
+  } catch (error) {
+    console.error(error);
+    statusElement.textContent = "Unable to detect printer details.";
+  } finally {
+    detectButton.disabled = false;
   }
 }
 

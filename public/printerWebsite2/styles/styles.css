@@ -217,6 +217,37 @@ nav {
     table-layout: fixed;
 }
 
+.table-view .toner-col,
+.table-view .toner-cell {
+    width: 10%;
+}
+
+.table-view .action-col,
+.table-view .action-cell {
+    width: 54px;
+    min-width: 54px;
+}
+
+.toner-cell {
+    overflow: hidden;
+}
+
+.toner-cell .badge {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.action-cell {
+    white-space: nowrap;
+}
+
+.action-cell .btn {
+    min-width: 38px;
+}
+
 .table-actions {
     width: 100%;
     display: flex;
@@ -259,6 +290,14 @@ form.compact-form {
     flex-wrap: wrap;
     gap: 10px;
     margin-top: 20px;
+}
+
+.detect-status {
+    width: 100%;
+    min-height: 22px;
+    color: #003547;
+    font-size: 14px;
+    text-align: center;
 }
 
 .empty-state {
@@ -347,6 +386,10 @@ body.dark-mode .form-control::placeholder {
 
 body.dark-mode .empty-state h2,
 body.dark-mode #table-con > h2 {
+    color: #e5e7eb;
+}
+
+body.dark-mode .detect-status {
     color: #e5e7eb;
 }
 
