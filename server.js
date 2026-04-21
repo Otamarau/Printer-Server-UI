@@ -94,6 +94,33 @@ function slugify(value) {
     .replace(/^-+|-+$/g, "");
 }
 
+function displayPathSlug(value) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "");
+}
+
+function routeKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function locationUrlPath(location) {
+  return `/${displayPathSlug(location.name)}`;
+}
+
+function findLocationByPath(pathValue) {
+  const key = routeKey(pathValue);
+
+  if (!key) {
+    return null;
+  }
+
+  return locations.find((location) => {
+    const idKey = routeKey(location.id);
+    const nameKey = routeKey(location.name);
+
+    return key === idKey || key === nameKey || nameKey.startsWith(key);
+  });
+}
+
 async function loadLocationsFromData() {
   const files = await fs.readdir(DATA_DIR);
   const defaultsById = new Map(locations.map((location) => [location.id, location]));
@@ -221,6 +248,7 @@ app.get("/api/locations", (req, res) => {
       id,
       name,
       vendor,
+      urlPath: locationUrlPath({ name }),
     })),
   );
 });
@@ -267,6 +295,7 @@ app.post("/api/locations", async (req, res, next) => {
       id: location.id,
       name: location.name,
       vendor: location.vendor,
+      urlPath: locationUrlPath(location),
     });
   } catch (error) {
     next(error);
@@ -425,6 +454,17 @@ app.delete("/api/locations/:locationId/printers/:printerId", async (req, res, ne
 app.use(express.static(PUBLIC_DIR));
 
 app.get("/", (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+app.get("/:locationPath", (req, res, next) => {
+  const location = findLocationByPath(req.params.locationPath);
+
+  if (!location) {
+    next();
+    return;
+  }
+
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 

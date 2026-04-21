@@ -35,6 +35,47 @@ function activeLocation() {
   return locations.find((location) => location.id === activeLocationId);
 }
 
+function routeKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function locationUrlPath(location) {
+  return location.urlPath || `/${String(location.name || "").replace(/[^a-z0-9]/gi, "")}`;
+}
+
+function findLocationFromPath() {
+  const pathValue = decodeURIComponent(window.location.pathname).replace(/^\/+|\/+$/g, "");
+  const key = routeKey(pathValue);
+
+  if (!key) {
+    return null;
+  }
+
+  return locations.find((location) => {
+    const idKey = routeKey(location.id);
+    const nameKey = routeKey(location.name);
+
+    return key === idKey || key === nameKey || nameKey.startsWith(key);
+  }) || null;
+}
+
+function setLocationPath(locationId, replace = false) {
+  const location = locations.find((item) => item.id === locationId);
+
+  if (!location) {
+    return;
+  }
+
+  const nextPath = locationUrlPath(location);
+
+  if (window.location.pathname === nextPath) {
+    return;
+  }
+
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ locationId }, "", nextPath);
+}
+
 function applyDarkMode(isDarkMode) {
   document.body.classList.toggle("dark-mode", isDarkMode);
   darkModeButton.innerHTML = isDarkMode
@@ -320,11 +361,11 @@ function renderLocationForm() {
 
 async function loadLocations() {
   locations = await apiRequest("/api/locations");
-  activeLocationId = locations[0]?.id || "";
+  activeLocationId = findLocationFromPath()?.id || locations[0]?.id || "";
   renderLocations();
 
   if (activeLocationId) {
-    await loadPrinters(activeLocationId);
+    await loadPrinters(activeLocationId, { replacePath: true });
   }
 }
 
@@ -335,6 +376,7 @@ async function refreshLocations() {
 
 async function loadPrinters(locationId, options = {}) {
   activeLocationId = locationId;
+  setLocationPath(locationId, Boolean(options.replacePath));
   renderLocations();
   renderVendor();
 
@@ -452,6 +494,14 @@ addPrinterButton.addEventListener("click", () => renderForm());
 addLocationButton.addEventListener("click", renderLocationForm);
 darkModeButton.addEventListener("click", () => {
   applyDarkMode(!document.body.classList.contains("dark-mode"));
+});
+
+window.addEventListener("popstate", () => {
+  const location = findLocationFromPath();
+
+  if (location) {
+    loadPrinters(location.id, { replacePath: true }).catch(console.error);
+  }
 });
 
 applyDarkMode(localStorage.getItem("printerManagerDarkMode") === "true");

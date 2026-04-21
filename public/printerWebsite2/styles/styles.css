@@ -319,3 +319,7 @@ body.dark-mode #table-con > h2 {
 .add-location-con {
     border-top: 2px solid white;
 }
+
+body.dark-mode .add-location-con {
+    border-top-color: #374151;
+}
