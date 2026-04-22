@@ -311,12 +311,14 @@ function renderTable() {
 function renderTableActions() {
   return `
     <div class="table-actions">
+      <button type="button" class="btn btn-primary" id="update-vendor-button">Update Vendor</button>
       <button type="button" class="btn btn-danger" id="delete-location-button">Delete Location</button>
     </div>
   `;
 }
 
 function attachTableActions() {
+  document.querySelector("#update-vendor-button")?.addEventListener("click", renderVendorForm);
   document.querySelector("#delete-location-button")?.addEventListener("click", deleteLocation);
 }
 
@@ -638,6 +640,57 @@ function renderLocationForm() {
   document.querySelector("#locationName").focus();
 }
 
+function renderVendorForm() {
+  currentView = "form";
+  const location = activeLocation();
+
+  if (!location) {
+    return;
+  }
+
+  vendorTitle.textContent = `Update Vendor: ${location.name}`;
+  tableContainer.innerHTML = `
+    <form id="vendor-form" class="compact-form">
+      <div class="form-group">
+        <label for="vendorName">Vendor Name</label>
+        <input
+          type="text"
+          class="form-control"
+          id="vendorName"
+          name="vendorName"
+          value="${escapeHtml(location.vendor?.name || "")}"
+          placeholder="Enter vendor name"
+          required
+        >
+      </div>
+      <div class="form-group">
+        <label for="vendorPhone">Vendor Phone</label>
+        <input
+          type="text"
+          class="form-control"
+          id="vendorPhone"
+          name="vendorPhone"
+          value="${escapeHtml(location.vendor?.phone || "")}"
+          placeholder="Enter vendor phone"
+          required
+        >
+      </div>
+      <div class="button-con">
+        <button type="submit" class="btn btn-success">Submit</button>
+        <button type="button" class="btn btn-primary" id="back-button">Back</button>
+      </div>
+    </form>
+  `;
+
+  document.querySelector("#vendor-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveVendor();
+  });
+
+  document.querySelector("#back-button").addEventListener("click", () => loadPrinters(activeLocationId));
+  document.querySelector("#vendorName").focus();
+}
+
 async function loadLocations() {
   locations = await apiRequest("/api/locations");
   activeLocationId = findLocationFromPath()?.id || locations[0]?.id || "";
@@ -679,6 +732,22 @@ async function saveLocation() {
 
   await refreshLocations();
   await loadPrinters(savedLocation.id);
+}
+
+async function saveVendor() {
+  const form = document.querySelector("#vendor-form");
+  const formData = new FormData(form);
+  const vendor = Object.fromEntries(formData.entries());
+  const updatedLocation = await apiRequest(`/api/locations/${activeLocationId}/vendor`, {
+    method: "PUT",
+    body: JSON.stringify(vendor),
+  });
+
+  locations = locations.map((location) => (
+    location.id === updatedLocation.id ? updatedLocation : location
+  ));
+  renderLocations();
+  await loadPrinters(updatedLocation.id);
 }
 
 async function savePrinter(printerId) {

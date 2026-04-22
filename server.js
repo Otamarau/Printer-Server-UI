@@ -1096,6 +1096,43 @@ app.delete("/api/locations/:locationId", async (req, res, next) => {
   }
 });
 
+app.put("/api/locations/:locationId/vendor", async (req, res, next) => {
+  try {
+    const location = findLocation(req.params.locationId);
+
+    if (!location) {
+      res.status(404).json({ error: "Location not found" });
+      return;
+    }
+
+    const vendorName = String(req.body.vendorName || "").trim();
+    const vendorPhone = String(req.body.vendorPhone || "").trim();
+
+    if (!vendorName || !vendorPhone) {
+      res.status(400).json({ error: "Vendor name and phone are required" });
+      return;
+    }
+
+    const printers = await readPrinters(location);
+
+    location.vendor = {
+      name: vendorName,
+      phone: vendorPhone,
+    };
+
+    await writePrinters(location, printers);
+
+    res.json({
+      id: location.id,
+      name: location.name,
+      vendor: location.vendor,
+      urlPath: locationUrlPath(location),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/printers/check-status", async (req, res, next) => {
   try {
     await refreshPrinterStatuses();
