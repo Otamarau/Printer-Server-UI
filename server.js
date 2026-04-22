@@ -1,5 +1,5 @@
 const express = require("express");
-const { execFile, spawn } = require("node:child_process");
+const { execFile } = require("node:child_process");
 const crypto = require("node:crypto");
 const dgram = require("node:dgram");
 const fs = require("node:fs/promises");
@@ -20,7 +20,6 @@ const PING_CONCURRENCY = Number(process.env.PING_CONCURRENCY) || 10;
 const SNMP_COMMUNITY = process.env.SNMP_COMMUNITY || "public";
 const SNMP_TIMEOUT_MS = Number(process.env.SNMP_TIMEOUT_MS) || 1200;
 const SNMP_MAX_SUPPLIES = Number(process.env.SNMP_MAX_SUPPLIES) || 40;
-const VNC_VIEWER_PATH = process.env.VNC_VIEWER_PATH || "";
 const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 const VNC_CONNECT_TIMEOUT_MS = Number(process.env.VNC_CONNECT_TIMEOUT_MS) || 5000;
 const VNC_SCAN_TIMEOUT_MS = Number(process.env.VNC_SCAN_TIMEOUT_MS) || 1500;
@@ -38,77 +37,10 @@ const printerOids = {
   suppliesLevel: "1.3.6.1.2.1.43.11.1.1.9.1",
 };
 
-const vncViewerPaths = [
-  VNC_VIEWER_PATH,
-  path.join(process.env.ProgramFiles || "C:\\Program Files", "uvnc bvba", "UltraVNC", "vncviewer.exe"),
-  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "uvnc bvba", "UltraVNC", "vncviewer.exe"),
-  path.join(process.env.ProgramFiles || "C:\\Program Files", "UltraVNC", "vncviewer.exe"),
-  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "UltraVNC", "vncviewer.exe"),
-  path.join(process.env.ProgramFiles || "C:\\Program Files", "TightVNC", "tvnviewer.exe"),
-  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "TightVNC", "tvnviewer.exe"),
-  path.join(process.env.ProgramFiles || "C:\\Program Files", "TigerVNC", "vncviewer.exe"),
-  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "TigerVNC", "vncviewer.exe"),
-].filter(Boolean);
-
 let statusCheckInProgress = false;
 const activeVncConnections = new Map();
 
-let locations = [
-  {
-    id: "springwood-toyota",
-    name: "Springwood Toyota",
-    file: "springwood-toyota.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-  {
-    id: "springwood-mazda-sales",
-    name: "Springwood Mazda Sales",
-    file: "springwood-mazda-sales.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-  {
-    id: "springwood-mazda-service",
-    name: "Springwood Mazda Service",
-    file: "springwood-mazda-service.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-  {
-    id: "cleveland-toyota",
-    name: "Cleveland Toyota",
-    file: "cleveland-toyota.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-  {
-    id: "redlands-mazda",
-    name: "Redlands Mazda",
-    file: "redlands-mazda.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-  {
-    id: "kingstine-pd",
-    name: "Kingstine PD",
-    file: "kingstine-pd.json",
-    vendor: {
-      name: "Cannon",
-      phone: "13 13 83",
-    },
-  },
-];
+let locations = [];
 
 app.use(express.json());
 
@@ -157,10 +89,10 @@ function findLocationByPath(pathValue) {
 
 async function loadLocationsFromData() {
   const files = await fs.readdir(DATA_DIR);
-  const defaultsById = new Map(locations.map((location) => [location.id, location]));
-  const loadedLocations = [];
 
-  for (const file of files.filter((item) => item.endsWith(".json"))) {
+  locations = [];
+
+  for (const file of files.filter((item) => item.endsWith(".json")).sort()) {
     const filePath = path.join(DATA_DIR, file);
     const data = JSON.parse(await fs.readFile(filePath, "utf8"));
 
@@ -168,23 +100,16 @@ async function loadLocationsFromData() {
       continue;
     }
 
-    const defaultLocation = defaultsById.get(data.id);
-    loadedLocations.push({
+    locations.push({
       id: data.id,
       name: data.name,
       file,
       vendor: {
-        name: data.vendor?.name || defaultLocation?.vendor.name || "Cannon",
-        phone: data.vendor?.phone || defaultLocation?.vendor.phone || "13 13 83",
+        name: data.vendor?.name || "Cannon",
+        phone: data.vendor?.phone || "13 13 83",
       },
     });
   }
-
-  locations = [
-    ...locations
-      .map((location) => loadedLocations.find((loadedLocation) => loadedLocation.id === location.id) || location),
-    ...loadedLocations.filter((location) => !defaultsById.has(location.id)),
-  ];
 }
 
 async function readPrinters(location) {
@@ -203,47 +128,6 @@ async function writePrinters(location, printers) {
   };
 
   await fs.writeFile(locationFilePath(location), `${JSON.stringify(data, null, 2)}\n`);
-}
-
-async function fileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function findVncViewer() {
-  for (const viewerPath of vncViewerPaths) {
-    if (await fileExists(viewerPath)) {
-      return viewerPath;
-    }
-  }
-
-  return "";
-}
-
-async function launchVncViewer(ip) {
-  if (!isWindows) {
-    throw new Error("VNC launching is only configured for Windows.");
-  }
-
-  const viewerPath = await findVncViewer();
-
-  if (!viewerPath) {
-    throw new Error("UltraVNC Viewer was not found. Set VNC_VIEWER_PATH to the vncviewer.exe path.");
-  }
-
-  const child = spawn(viewerPath, [`${ip}::5900`], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: false,
-  });
-
-  child.unref();
-
-  return viewerPath;
 }
 
 function sendWebSocketFrame(socket, opcode, payload = Buffer.alloc(0)) {
@@ -1232,28 +1116,6 @@ app.post("/api/printers/detect", async (req, res, next) => {
 
     res.json(await detectPrinterProperties(ip));
   } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/printers/open-vnc", async (req, res, next) => {
-  try {
-    const ip = String(req.body.ip || "").trim();
-
-    if (!isValidIpAddress(ip)) {
-      res.status(400).json({ error: "Valid IP address is required" });
-      return;
-    }
-
-    const viewerPath = await launchVncViewer(ip);
-
-    res.json({ ok: true, viewerPath });
-  } catch (error) {
-    if (/UltraVNC|Windows/.test(error.message)) {
-      res.status(500).json({ error: error.message });
-      return;
-    }
-
     next(error);
   }
 });
