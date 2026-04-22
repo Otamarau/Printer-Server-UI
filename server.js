@@ -2,6 +2,7 @@ const express = require("express");
 const { execFile } = require("node:child_process");
 const crypto = require("node:crypto");
 const dgram = require("node:dgram");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -11,6 +12,10 @@ const { randomUUID } = require("node:crypto");
 const { promisify } = require("node:util");
 
 const app = express();
+const CONFIG_FILE = process.env.CONFIG_FILE
+  ? path.resolve(process.env.CONFIG_FILE)
+  : path.join(__dirname, "config.json");
+const config = loadConfig(CONFIG_FILE);
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public", "printerWebsite2");
 const DATA_DIR = path.join(__dirname, "data");
@@ -23,7 +28,7 @@ const SNMP_MAX_SUPPLIES = Number(process.env.SNMP_MAX_SUPPLIES) || 40;
 const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 const VNC_CONNECT_TIMEOUT_MS = Number(process.env.VNC_CONNECT_TIMEOUT_MS) || 5000;
 const VNC_SCAN_TIMEOUT_MS = Number(process.env.VNC_SCAN_TIMEOUT_MS) || 1500;
-const DELETE_LOCATION_PIN = process.env.DELETE_LOCATION_PIN || "oldtoy";
+const DELETE_LOCATION_PIN = process.env.DELETE_LOCATION_PIN || config.deleteLocationPin;
 const execFileAsync = promisify(execFile);
 const isWindows = os.platform() === "win32";
 
@@ -43,6 +48,18 @@ const activeVncConnections = new Map();
 let locations = [];
 
 app.use(express.json());
+
+function loadConfig(filePath) {
+  try {
+    return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {};
+    }
+
+    throw new Error(`Unable to load config file at ${filePath}: ${error.message}`);
+  }
+}
 
 function findLocation(locationId) {
   return locations.find((location) => location.id === locationId);
@@ -1079,6 +1096,11 @@ app.delete("/api/locations/:locationId", async (req, res, next) => {
 
     if (!location) {
       res.status(404).json({ error: "Location not found" });
+      return;
+    }
+
+    if (!DELETE_LOCATION_PIN) {
+      res.status(503).json({ error: "Delete location PIN is not configured" });
       return;
     }
 
