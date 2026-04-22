@@ -123,7 +123,8 @@ nav {
 
 #vendor-nav {
     width: 100%;
-    min-height: 70px;
+    /* min-height: 70px; */
+    height: 70px;
     background-color: #003547;
     display: flex;
     justify-content: center;
@@ -222,6 +223,8 @@ nav {
     width: 10%;
 }
 
+.table-view .vnc-col,
+.table-view .vnc-cell,
 .table-view .action-col,
 .table-view .action-cell {
     width: 54px;
@@ -244,6 +247,7 @@ nav {
     white-space: nowrap;
 }
 
+.vnc-cell .btn,
 .action-cell .btn {
     min-width: 38px;
 }
@@ -253,6 +257,103 @@ nav {
     display: flex;
     justify-content: center;
     padding: 18px 0 30px;
+}
+
+.vnc-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(10, 18, 28, 0.72);
+}
+
+.vnc-modal.open {
+    display: flex;
+}
+
+.vnc-modal-panel {
+    width: min(1200px, 100%);
+    height: min(820px, calc(100vh - 36px));
+    height: min(820px, calc(100dvh - 36px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #0f172a;
+    color: #f8fafc;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
+
+.vnc-toolbar {
+    flex: 0 0 auto;
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 14px;
+    background: #003547;
+    border-bottom: 1px solid #334155;
+}
+
+.vnc-toolbar h2 {
+    color: #ffffff;
+    line-height: 1.2;
+}
+
+.vnc-status {
+    display: block;
+    margin-top: 3px;
+    color: #d7e8ef;
+    font-size: 13px;
+}
+
+.vnc-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vnc-toolbar-actions .btn {
+    min-width: 40px;
+    min-height: 38px;
+}
+
+.vnc-password-panel {
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    background: #172033;
+    border-bottom: 1px solid #334155;
+}
+
+.vnc-password-form {
+    width: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 0;
+}
+
+.vnc-password-form .form-control {
+    width: min(360px, 100%);
+}
+
+.vnc-screen {
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #05070c;
+    overflow: hidden;
+}
+
+.vnc-screen canvas {
+    outline: none;
 }
 
 

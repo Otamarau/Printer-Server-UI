@@ -1,7 +1,10 @@
 const express = require("express");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const dgram = require("node:dgram");
 const fs = require("node:fs/promises");
+const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
@@ -17,6 +20,9 @@ const PING_CONCURRENCY = Number(process.env.PING_CONCURRENCY) || 10;
 const SNMP_COMMUNITY = process.env.SNMP_COMMUNITY || "public";
 const SNMP_TIMEOUT_MS = Number(process.env.SNMP_TIMEOUT_MS) || 1200;
 const SNMP_MAX_SUPPLIES = Number(process.env.SNMP_MAX_SUPPLIES) || 40;
+const VNC_VIEWER_PATH = process.env.VNC_VIEWER_PATH || "";
+const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
+const VNC_CONNECT_TIMEOUT_MS = Number(process.env.VNC_CONNECT_TIMEOUT_MS) || 5000;
 const DELETE_LOCATION_PIN = process.env.DELETE_LOCATION_PIN || "oldtoy";
 const execFileAsync = promisify(execFile);
 const isWindows = os.platform() === "win32";
@@ -30,6 +36,18 @@ const printerOids = {
   suppliesMaxCapacity: "1.3.6.1.2.1.43.11.1.1.8.1",
   suppliesLevel: "1.3.6.1.2.1.43.11.1.1.9.1",
 };
+
+const vncViewerPaths = [
+  VNC_VIEWER_PATH,
+  path.join(process.env.ProgramFiles || "C:\\Program Files", "uvnc bvba", "UltraVNC", "vncviewer.exe"),
+  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "uvnc bvba", "UltraVNC", "vncviewer.exe"),
+  path.join(process.env.ProgramFiles || "C:\\Program Files", "UltraVNC", "vncviewer.exe"),
+  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "UltraVNC", "vncviewer.exe"),
+  path.join(process.env.ProgramFiles || "C:\\Program Files", "TightVNC", "tvnviewer.exe"),
+  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "TightVNC", "tvnviewer.exe"),
+  path.join(process.env.ProgramFiles || "C:\\Program Files", "TigerVNC", "vncviewer.exe"),
+  path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "TigerVNC", "vncviewer.exe"),
+].filter(Boolean);
 
 let statusCheckInProgress = false;
 
@@ -183,6 +201,241 @@ async function writePrinters(location, printers) {
   };
 
   await fs.writeFile(locationFilePath(location), `${JSON.stringify(data, null, 2)}\n`);
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findVncViewer() {
+  for (const viewerPath of vncViewerPaths) {
+    if (await fileExists(viewerPath)) {
+      return viewerPath;
+    }
+  }
+
+  return "";
+}
+
+async function launchVncViewer(ip) {
+  if (!isWindows) {
+    throw new Error("VNC launching is only configured for Windows.");
+  }
+
+  const viewerPath = await findVncViewer();
+
+  if (!viewerPath) {
+    throw new Error("UltraVNC Viewer was not found. Set VNC_VIEWER_PATH to the vncviewer.exe path.");
+  }
+
+  const child = spawn(viewerPath, [`${ip}::5900`], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+
+  child.unref();
+
+  return viewerPath;
+}
+
+function sendWebSocketFrame(socket, opcode, payload = Buffer.alloc(0)) {
+  if (socket.destroyed) {
+    return;
+  }
+
+  const data = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  let header;
+
+  if (data.length < 126) {
+    header = Buffer.from([0x80 | opcode, data.length]);
+  } else if (data.length <= 0xffff) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(data.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(data.length), 2);
+  }
+
+  socket.write(Buffer.concat([header, data]));
+}
+
+function closeWebSocket(socket, code = 1000, reason = "") {
+  if (socket.destroyed) {
+    return;
+  }
+
+  const reasonBuffer = Buffer.from(reason);
+  const payload = Buffer.alloc(2 + reasonBuffer.length);
+  payload.writeUInt16BE(code, 0);
+  reasonBuffer.copy(payload, 2);
+  sendWebSocketFrame(socket, 0x8, payload);
+  socket.end();
+}
+
+function parseWebSocketFrames(state, chunk, onFrame) {
+  state.buffer = Buffer.concat([state.buffer, chunk]);
+
+  while (state.buffer.length >= 2) {
+    const firstByte = state.buffer[0];
+    const secondByte = state.buffer[1];
+    const opcode = firstByte & 0x0f;
+    const masked = Boolean(secondByte & 0x80);
+    let payloadLength = secondByte & 0x7f;
+    let offset = 2;
+
+    if (payloadLength === 126) {
+      if (state.buffer.length < offset + 2) {
+        return;
+      }
+
+      payloadLength = state.buffer.readUInt16BE(offset);
+      offset += 2;
+    } else if (payloadLength === 127) {
+      if (state.buffer.length < offset + 8) {
+        return;
+      }
+
+      const longPayloadLength = state.buffer.readBigUInt64BE(offset);
+
+      if (longPayloadLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("WebSocket frame is too large.");
+      }
+
+      payloadLength = Number(longPayloadLength);
+      offset += 8;
+    }
+
+    const maskLength = masked ? 4 : 0;
+    const frameLength = offset + maskLength + payloadLength;
+
+    if (state.buffer.length < frameLength) {
+      return;
+    }
+
+    const mask = masked ? state.buffer.subarray(offset, offset + 4) : null;
+    offset += maskLength;
+
+    const payload = Buffer.from(state.buffer.subarray(offset, offset + payloadLength));
+    state.buffer = state.buffer.subarray(frameLength);
+
+    if (mask) {
+      for (let index = 0; index < payload.length; index += 1) {
+        payload[index] ^= mask[index % 4];
+      }
+    }
+
+    onFrame(opcode, payload);
+  }
+}
+
+function handleVncWebSocketUpgrade(req, socket) {
+  let tcpSocket = null;
+
+  try {
+    const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const ip = String(requestUrl.searchParams.get("host") || "").trim();
+    const port = Number(requestUrl.searchParams.get("port")) || VNC_PORT;
+    const webSocketKey = req.headers["sec-websocket-key"];
+
+    if (requestUrl.pathname !== "/api/vnc") {
+      socket.destroy();
+      return;
+    }
+
+    if (!isValidIpAddress(ip) || port !== VNC_PORT || typeof webSocketKey !== "string") {
+      socket.destroy();
+      return;
+    }
+
+    const acceptKey = crypto
+      .createHash("sha1")
+      .update(`${webSocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+
+    socket.write([
+      "HTTP/1.1 101 Switching Protocols",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      `Sec-WebSocket-Accept: ${acceptKey}`,
+      "",
+      "",
+    ].join("\r\n"));
+
+    const frameState = {
+      buffer: Buffer.alloc(0),
+    };
+
+    tcpSocket = net.createConnection({ host: ip, port });
+    tcpSocket.setTimeout(VNC_CONNECT_TIMEOUT_MS);
+
+    tcpSocket.on("connect", () => {
+      tcpSocket.setTimeout(0);
+    });
+
+    tcpSocket.on("data", (data) => {
+      sendWebSocketFrame(socket, 0x2, data);
+    });
+
+    tcpSocket.on("timeout", () => {
+      closeWebSocket(socket, 1011, "Timed out connecting to VNC server.");
+      tcpSocket.destroy();
+    });
+
+    tcpSocket.on("error", () => {
+      closeWebSocket(socket, 1011, "Failed to connect to VNC server.");
+    });
+
+    tcpSocket.on("close", () => {
+      closeWebSocket(socket);
+    });
+
+    socket.on("data", (chunk) => {
+      try {
+        parseWebSocketFrames(frameState, chunk, (opcode, payload) => {
+          if (opcode === 0x8) {
+            tcpSocket.destroy();
+            socket.end();
+            return;
+          }
+
+          if (opcode === 0x9) {
+            sendWebSocketFrame(socket, 0xA, payload);
+            return;
+          }
+
+          if (opcode === 0x2 || opcode === 0x0) {
+            tcpSocket.write(payload);
+          }
+        });
+      } catch (error) {
+        console.error("VNC websocket error:", error.message);
+        closeWebSocket(socket, 1002, "Invalid websocket frame.");
+        tcpSocket.destroy();
+      }
+    });
+
+    socket.on("error", () => {
+      tcpSocket.destroy();
+    });
+
+    socket.on("close", () => {
+      tcpSocket.destroy();
+    });
+  } catch (error) {
+    console.error("VNC websocket upgrade failed:", error);
+    tcpSocket?.destroy();
+    socket.destroy();
+  }
 }
 
 function parseJsonArray(value) {
@@ -905,6 +1158,28 @@ app.post("/api/printers/detect", async (req, res, next) => {
   }
 });
 
+app.post("/api/printers/open-vnc", async (req, res, next) => {
+  try {
+    const ip = String(req.body.ip || "").trim();
+
+    if (!isValidIpAddress(ip)) {
+      res.status(400).json({ error: "Valid IP address is required" });
+      return;
+    }
+
+    const viewerPath = await launchVncViewer(ip);
+
+    res.json({ ok: true, viewerPath });
+  } catch (error) {
+    if (/UltraVNC|Windows/.test(error.message)) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    next(error);
+  }
+});
+
 app.get("/api/locations/:locationId/printers", async (req, res, next) => {
   try {
     const location = findLocation(req.params.locationId);
@@ -1061,7 +1336,18 @@ app.use((error, req, res, next) => {
 async function startServer() {
   await loadLocationsFromData();
 
-  app.listen(PORT, () => {
+  const server = http.createServer(app);
+
+  server.on("upgrade", (req, socket) => {
+    if (req.url?.startsWith("/api/vnc")) {
+      handleVncWebSocketUpgrade(req, socket);
+      return;
+    }
+
+    socket.destroy();
+  });
+
+  server.listen(PORT, () => {
     console.log(`Printer website server running at http://localhost:${PORT}`);
     console.log(`Printer status checks running every ${Math.round(PING_INTERVAL_MS / 1000)} seconds`);
   });

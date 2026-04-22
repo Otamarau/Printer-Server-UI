@@ -9,6 +9,8 @@ let locations = [];
 let activeLocationId = "";
 let printers = [];
 let currentView = "table";
+let rfbClient = null;
+let noVncModulePromise = null;
 
 const fields = [
   { key: "name", label: "Name", placeholder: "Enter name" },
@@ -245,13 +247,13 @@ function renderTable() {
             <th scope="col">Name</th>
             <th scope="col">IP</th>
             <th scope="col">Model</th>
-            <th scope="col">MachineNO</th>
             <th scope="col">SerialNO</th>
             <th scope="col">Location</th>
             <th scope="col">Department</th>
             <th scope="col">Manufacturer</th>
             <th scope="col">Status</th>
             <th scope="col" class="toner-col">Toner</th>
+            <th scope="col" class="vnc-col">VNC</th>
             <th scope="col" class="action-col"></th>
           </tr>
         </thead>
@@ -263,13 +265,17 @@ function renderTable() {
                   <th scope="row">${escapeHtml(printer.name)}</th>
                   <td><a href="http://${escapeHtml(printer.ip)}" target="_blank" rel="noreferrer">${escapeHtml(printer.ip)}</a></td>
                   <td>${escapeHtml(printer.model)}</td>
-                  <td>${escapeHtml(printer.machineNo)}</td>
                   <td>${escapeHtml(printer.serialNo)}</td>
                   <td>${escapeHtml(printer.location)}</td>
                   <td>${escapeHtml(printer.department)}</td>
                   <td>${escapeHtml(printer.manufacturer)}</td>
                   <td${statusCheckedTitle(printer)}>${statusBadge(printer.status)}</td>
                   <td class="toner-cell"${tonerCheckedTitle(printer)}>${tonerBadge(printer.tonerStatus)}</td>
+                  <td class="vnc-cell">
+                    <button type="button" class="btn btn-outline-primary open-vnc-button" data-printer-ip="${escapeHtml(printer.ip)}" data-printer-name="${escapeHtml(printer.name)}" title="Open browser VNC">
+                      <i class="fa-solid fa-display"></i>
+                    </button>
+                  </td>
                   <td class="action-cell">
                     <button type="button" class="btn btn-success edit-printer-button" data-printer-id="${printer.id}" title="Edit printer">
                       <i class="fa-solid fa-pen"></i>
@@ -287,6 +293,9 @@ function renderTable() {
 
   document.querySelectorAll(".edit-printer-button").forEach((button) => {
     button.addEventListener("click", () => renderForm(button.dataset.printerId));
+  });
+  document.querySelectorAll(".open-vnc-button").forEach((button) => {
+    button.addEventListener("click", () => openVnc(button.dataset.printerIp, button.dataset.printerName, button));
   });
   attachTableActions();
 }
@@ -407,6 +416,149 @@ async function detectPrinterFromForm() {
     statusElement.textContent = "Unable to detect printer details.";
   } finally {
     detectButton.disabled = false;
+  }
+}
+
+function ensureVncModal() {
+  let modal = document.querySelector("#vnc-modal");
+
+  if (modal) {
+    return modal;
+  }
+
+  modal = document.createElement("div");
+  modal.id = "vnc-modal";
+  modal.className = "vnc-modal";
+  modal.innerHTML = `
+    <div class="vnc-modal-panel" role="dialog" aria-modal="true" aria-labelledby="vnc-modal-title">
+      <div class="vnc-toolbar">
+        <div>
+          <h2 id="vnc-modal-title">VNC</h2>
+          <span id="vnc-status" class="vnc-status">Disconnected</span>
+        </div>
+        <div class="vnc-toolbar-actions">
+          <button type="button" class="btn btn-outline-light" id="vnc-fullscreen-button" title="Fullscreen">
+            <i class="fa-solid fa-expand"></i>
+          </button>
+          <button type="button" class="btn btn-danger" id="vnc-close-button" title="Close">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+      </div>
+      <div class="vnc-password-panel" id="vnc-password-panel" hidden>
+        <form id="vnc-password-form" class="vnc-password-form">
+          <input type="password" class="form-control" id="vnc-password-input" autocomplete="current-password" placeholder="VNC password">
+          <button type="submit" class="btn btn-primary">Connect</button>
+        </form>
+      </div>
+      <div id="vnc-screen" class="vnc-screen"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector("#vnc-close-button").addEventListener("click", closeVncModal);
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) {
+      closeVncModal();
+    }
+  });
+  modal.querySelector("#vnc-fullscreen-button").addEventListener("click", () => {
+    modal.querySelector(".vnc-modal-panel").requestFullscreen?.();
+  });
+  modal.querySelector("#vnc-password-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    const passwordInput = modal.querySelector("#vnc-password-input");
+    const passwordPanel = modal.querySelector("#vnc-password-panel");
+
+    rfbClient?.sendCredentials({ password: passwordInput.value });
+    passwordInput.value = "";
+    passwordPanel.hidden = true;
+    setVncStatus("Authenticating...");
+  });
+
+  return modal;
+}
+
+function setVncStatus(message) {
+  const status = document.querySelector("#vnc-status");
+
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function closeVncModal() {
+  if (rfbClient) {
+    rfbClient.disconnect();
+    rfbClient = null;
+  }
+
+  const modal = document.querySelector("#vnc-modal");
+
+  if (modal) {
+    modal.classList.remove("open");
+    modal.querySelector("#vnc-screen").replaceChildren();
+    modal.querySelector("#vnc-password-panel").hidden = true;
+    setVncStatus("Disconnected");
+  }
+}
+
+function loadNoVnc() {
+  if (!noVncModulePromise) {
+    noVncModulePromise = import("https://cdn.jsdelivr.net/npm/@novnc/novnc@1.6.0/core/rfb.js");
+  }
+
+  return noVncModulePromise;
+}
+
+async function openVnc(ip, printerName, button) {
+  button.disabled = true;
+  const modal = ensureVncModal();
+  const screen = modal.querySelector("#vnc-screen");
+  const title = modal.querySelector("#vnc-modal-title");
+  const passwordPanel = modal.querySelector("#vnc-password-panel");
+
+  try {
+    if (rfbClient) {
+      rfbClient.disconnect();
+      rfbClient = null;
+    }
+
+    screen.replaceChildren();
+    passwordPanel.hidden = true;
+    title.textContent = `${printerName || "Printer"} VNC`;
+    modal.classList.add("open");
+    setVncStatus("Loading browser VNC...");
+
+    const { default: RFB } = await loadNoVnc();
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const vncUrl = `${protocol}//${window.location.host}/api/vnc?host=${encodeURIComponent(ip)}&port=5900`;
+
+    setVncStatus(`Connecting to ${ip}...`);
+
+    rfbClient = new RFB(screen, vncUrl);
+    rfbClient.scaleViewport = true;
+    rfbClient.resizeSession = true;
+    rfbClient.clipViewport = false;
+
+    rfbClient.addEventListener("connect", () => {
+      setVncStatus(`Connected to ${ip}`);
+    });
+    rfbClient.addEventListener("disconnect", (event) => {
+      setVncStatus(event.detail.clean ? "Disconnected" : "Connection failed");
+    });
+    rfbClient.addEventListener("credentialsrequired", () => {
+      setVncStatus("Password required");
+      passwordPanel.hidden = false;
+      modal.querySelector("#vnc-password-input").focus();
+    });
+  } catch (error) {
+    console.error(error);
+    setVncStatus("Unable to load browser VNC");
+    window.alert("Unable to open browser VNC. Check that this server can load noVNC from the CDN and that the printer accepts VNC on port 5900.");
+  } finally {
+    button.disabled = false;
   }
 }
 

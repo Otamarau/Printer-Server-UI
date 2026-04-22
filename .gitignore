@@ -1,4 +1,5 @@
 node_modules/
+data/
 .env
 npm-debug.log*
 yarn-debug.log*
@@ -8,4 +9,5 @@ data/springwood-mazda-service.json
 data/redlands-mazda.json
 data/cleveland-toyota.json
 data/springwood-toyota.json
+
 
