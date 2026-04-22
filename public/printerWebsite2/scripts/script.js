@@ -141,6 +141,18 @@ function tonerCheckedTitle(printer) {
   return title ? ` title="${escapeHtml(title)}"` : "";
 }
 
+function renderVncCell(printer) {
+  if (!printer.vncAvailable) {
+    return "";
+  }
+
+  return `
+    <button type="button" class="btn btn-outline-primary open-vnc-button" data-printer-ip="${escapeHtml(printer.ip)}" data-printer-name="${escapeHtml(printer.name)}" title="Open browser VNC">
+      <i class="fa-solid fa-display"></i>
+    </button>
+  `;
+}
+
 function setInputValue(form, name, value, options = {}) {
   const input = form.elements[name];
 
@@ -271,11 +283,7 @@ function renderTable() {
                   <td>${escapeHtml(printer.manufacturer)}</td>
                   <td${statusCheckedTitle(printer)}>${statusBadge(printer.status)}</td>
                   <td class="toner-cell"${tonerCheckedTitle(printer)}>${tonerBadge(printer.tonerStatus)}</td>
-                  <td class="vnc-cell">
-                    <button type="button" class="btn btn-outline-primary open-vnc-button" data-printer-ip="${escapeHtml(printer.ip)}" data-printer-name="${escapeHtml(printer.name)}" title="Open browser VNC">
-                      <i class="fa-solid fa-display"></i>
-                    </button>
-                  </td>
+                  <td class="vnc-cell">${renderVncCell(printer)}</td>
                   <td class="action-cell">
                     <button type="button" class="btn btn-success edit-printer-button" data-printer-id="${printer.id}" title="Edit printer">
                       <i class="fa-solid fa-pen"></i>
@@ -341,6 +349,8 @@ function renderForm(printerId = "") {
       <input type="hidden" id="tonerStatus" name="tonerStatus" value="${escapeHtml(printer.tonerStatus)}">
       <input type="hidden" id="tonerSupplies" name="tonerSupplies" value="${escapeHtml(JSON.stringify(printer.tonerSupplies || []))}">
       <input type="hidden" id="tonerCheckedAt" name="tonerCheckedAt" value="${escapeHtml(printer.tonerCheckedAt)}">
+      <input type="hidden" id="vncAvailable" name="vncAvailable" value="${escapeHtml(Boolean(printer.vncAvailable))}">
+      <input type="hidden" id="vncCheckedAt" name="vncCheckedAt" value="${escapeHtml(printer.vncCheckedAt)}">
       <input type="hidden" id="statusCheckedAt" name="statusCheckedAt" value="${escapeHtml(printer.statusCheckedAt)}">
       <div class="detect-status" id="detect-printer-status"></div>
       <div class="button-con">
@@ -400,6 +410,8 @@ async function detectPrinterFromForm() {
       setInputValue(form, "tonerStatus", fields.tonerStatus) && "toner",
       setInputValue(form, "tonerSupplies", fields.tonerSupplies) && "toner supplies",
       setInputValue(form, "tonerCheckedAt", fields.tonerCheckedAt) && "toner checked time",
+      setInputValue(form, "vncAvailable", fields.vncAvailable) && "VNC",
+      setInputValue(form, "vncCheckedAt", fields.vncCheckedAt) && "VNC checked time",
       setInputValue(form, "statusCheckedAt", fields.statusCheckedAt) && "status checked time",
     ].filter(Boolean);
 
@@ -506,7 +518,7 @@ function closeVncModal() {
 
 function loadNoVnc() {
   if (!noVncModulePromise) {
-    noVncModulePromise = import("https://cdn.jsdelivr.net/npm/@novnc/novnc@1.6.0/core/rfb.js");
+    noVncModulePromise = import("/vendor/novnc-source/core/rfb.js");
   }
 
   return noVncModulePromise;
@@ -541,12 +553,18 @@ async function openVnc(ip, printerName, button) {
     rfbClient.scaleViewport = true;
     rfbClient.resizeSession = true;
     rfbClient.clipViewport = false;
+    rfbClient.showDotCursor = true;
 
     rfbClient.addEventListener("connect", () => {
       setVncStatus(`Connected to ${ip}`);
     });
     rfbClient.addEventListener("disconnect", (event) => {
-      setVncStatus(event.detail.clean ? "Disconnected" : "Connection failed");
+      const reason = event.detail.reason || "Connection failed";
+
+      setVncStatus(event.detail.clean ? "Disconnected" : reason);
+    });
+    rfbClient.addEventListener("securityfailure", (event) => {
+      setVncStatus(event.detail.reason || "VNC authentication failed");
     });
     rfbClient.addEventListener("credentialsrequired", () => {
       setVncStatus("Password required");
@@ -555,8 +573,10 @@ async function openVnc(ip, printerName, button) {
     });
   } catch (error) {
     console.error(error);
-    setVncStatus("Unable to load browser VNC");
-    window.alert("Unable to open browser VNC. Check that this server can load noVNC from the CDN and that the printer accepts VNC on port 5900.");
+    const message = error?.message || "Unknown error";
+
+    setVncStatus(`Unable to load browser VNC: ${message}`);
+    window.alert(`Unable to open browser VNC: ${message}`);
   } finally {
     button.disabled = false;
   }

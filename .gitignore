@@ -1,13 +1,14 @@
 node_modules/
 data/
+.codex-downloads/
 .env
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+server.out.log
+server.err.log
 data/springwood-mazda-service.json
 data/redlands-mazda.json
 data/cleveland-toyota.json
 data/springwood-toyota.json
-
-

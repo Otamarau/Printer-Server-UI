@@ -53,6 +53,7 @@ nav {
     width: 250px;
     height: 100vh;
     height: 100dvh;
+    min-height: 0;
     background-color: #005E54;
     color: white;
     display: flex;
@@ -63,6 +64,7 @@ nav {
 }
 
 .title-con {
+    flex: 0 0 auto;
     width: 100%;
     text-align: center;
     min-height: 70px;
@@ -83,6 +85,26 @@ nav {
     flex-direction: column;
     overflow: auto;
     scrollbar-width: thin;
+    scrollbar-color: #8aa4af #005E54;
+}
+
+#location-row-con::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+#location-row-con::-webkit-scrollbar-track {
+    background: #005E54;
+}
+
+#location-row-con::-webkit-scrollbar-thumb {
+    background: #8aa4af;
+    border: 2px solid #005E54;
+    border-radius: 8px;
+}
+
+#location-row-con::-webkit-scrollbar-thumb:hover {
+    background: #c7d5da;
 }
 
 .location-row {
@@ -349,10 +371,12 @@ nav {
     flex: 1 1 auto;
     min-height: 0;
     background: #05070c;
+    cursor: default;
     overflow: hidden;
 }
 
 .vnc-screen canvas {
+    cursor: default !important;
     outline: none;
 }
 
@@ -443,6 +467,23 @@ body.dark-mode .location-row:hover {
     background-color: #1f2937;
 }
 
+body.dark-mode #location-row-con {
+    scrollbar-color: #4b6475 #111827;
+}
+
+body.dark-mode #location-row-con::-webkit-scrollbar-track {
+    background: #111827;
+}
+
+body.dark-mode #location-row-con::-webkit-scrollbar-thumb {
+    background: #4b6475;
+    border-color: #111827;
+}
+
+body.dark-mode #location-row-con::-webkit-scrollbar-thumb:hover {
+    background: #6b8394;
+}
+
 body.dark-mode #content-con {
     background-color: #111827;
 }
@@ -496,6 +537,7 @@ body.dark-mode .detect-status {
 
 
 .add-location-con {
+    flex: 0 0 auto;
     border-top: 2px solid white;
 }
 

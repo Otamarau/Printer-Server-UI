@@ -23,6 +23,7 @@ const SNMP_MAX_SUPPLIES = Number(process.env.SNMP_MAX_SUPPLIES) || 40;
 const VNC_VIEWER_PATH = process.env.VNC_VIEWER_PATH || "";
 const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 const VNC_CONNECT_TIMEOUT_MS = Number(process.env.VNC_CONNECT_TIMEOUT_MS) || 5000;
+const VNC_SCAN_TIMEOUT_MS = Number(process.env.VNC_SCAN_TIMEOUT_MS) || 1500;
 const DELETE_LOCATION_PIN = process.env.DELETE_LOCATION_PIN || "oldtoy";
 const execFileAsync = promisify(execFile);
 const isWindows = os.platform() === "win32";
@@ -50,6 +51,7 @@ const vncViewerPaths = [
 ].filter(Boolean);
 
 let statusCheckInProgress = false;
+const activeVncConnections = new Map();
 
 let locations = [
   {
@@ -357,6 +359,26 @@ function handleVncWebSocketUpgrade(req, socket) {
       return;
     }
 
+    const previousConnection = activeVncConnections.get(ip);
+
+    if (previousConnection) {
+      closeWebSocket(previousConnection.socket, 1012, "Another VNC session was opened.");
+      previousConnection.tcpSocket?.destroy();
+      previousConnection.socket.destroy();
+    }
+
+    const activeConnection = {
+      socket,
+      tcpSocket: null,
+    };
+    activeVncConnections.set(ip, activeConnection);
+
+    const cleanupConnection = () => {
+      if (activeVncConnections.get(ip) === activeConnection) {
+        activeVncConnections.delete(ip);
+      }
+    };
+
     const acceptKey = crypto
       .createHash("sha1")
       .update(`${webSocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
@@ -376,26 +398,31 @@ function handleVncWebSocketUpgrade(req, socket) {
     };
 
     tcpSocket = net.createConnection({ host: ip, port });
+    activeConnection.tcpSocket = tcpSocket;
+    let receivedVncData = false;
     tcpSocket.setTimeout(VNC_CONNECT_TIMEOUT_MS);
 
-    tcpSocket.on("connect", () => {
-      tcpSocket.setTimeout(0);
-    });
-
     tcpSocket.on("data", (data) => {
+      receivedVncData = true;
+      tcpSocket.setTimeout(0);
       sendWebSocketFrame(socket, 0x2, data);
     });
 
     tcpSocket.on("timeout", () => {
-      closeWebSocket(socket, 1011, "Timed out connecting to VNC server.");
+      const message = receivedVncData
+        ? "VNC server stopped responding."
+        : "VNC server accepted the connection but did not send a VNC handshake.";
+
+      closeWebSocket(socket, 1011, message);
       tcpSocket.destroy();
     });
 
-    tcpSocket.on("error", () => {
-      closeWebSocket(socket, 1011, "Failed to connect to VNC server.");
+    tcpSocket.on("error", (error) => {
+      closeWebSocket(socket, 1011, `Failed to connect to VNC server: ${error.code || error.message}`);
     });
 
     tcpSocket.on("close", () => {
+      cleanupConnection();
       closeWebSocket(socket);
     });
 
@@ -425,10 +452,12 @@ function handleVncWebSocketUpgrade(req, socket) {
     });
 
     socket.on("error", () => {
+      cleanupConnection();
       tcpSocket.destroy();
     });
 
     socket.on("close", () => {
+      cleanupConnection();
       tcpSocket.destroy();
     });
   } catch (error) {
@@ -456,6 +485,10 @@ function parseJsonArray(value) {
   }
 }
 
+function parseBoolean(value) {
+  return value === true || value === "true" || value === "1" || value === 1;
+}
+
 function isValidIpAddress(ip) {
   return /^(\d{1,3}\.){3}\d{1,3}$/.test(String(ip || ""));
 }
@@ -475,6 +508,36 @@ async function pingPrinter(ip) {
   } catch {
     return false;
   }
+}
+
+async function isTcpPortOpen(ip, port, timeoutMs) {
+  if (!isValidIpAddress(ip)) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: ip, port });
+    let settled = false;
+
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => settle(true));
+    socket.once("timeout", () => settle(false));
+    socket.once("error", () => settle(false));
+  });
+}
+
+function checkVncAvailable(ip) {
+  return isTcpPortOpen(ip, VNC_PORT, VNC_SCAN_TIMEOUT_MS);
 }
 
 function encodeLength(length) {
@@ -910,6 +973,8 @@ async function detectPrinterProperties(ip) {
     return {
       online: false,
       status: "Offline",
+      vncAvailable: false,
+      vncCheckedAt: detectedAt,
       statusCheckedAt: detectedAt,
       detectedAt,
       fields: {},
@@ -917,12 +982,13 @@ async function detectPrinterProperties(ip) {
     };
   }
 
-  const [sysDescr, sysName, printerName, serialNumber, tonerInfo] = await Promise.all([
+  const [sysDescr, sysName, printerName, serialNumber, tonerInfo, vncAvailable] = await Promise.all([
     snmpRequest(ip, printerOids.sysDescr),
     snmpRequest(ip, printerOids.sysName),
     snmpRequest(ip, printerOids.printerName),
     snmpRequest(ip, printerOids.serialNumber),
     detectPrinterSupplies(ip),
+    checkVncAvailable(ip),
   ]);
   const raw = {
     sysDescr: compactDetectedText(sysDescr?.value),
@@ -941,12 +1007,16 @@ async function detectPrinterProperties(ip) {
     tonerStatus: tonerInfo.tonerStatus,
     tonerSupplies: tonerInfo.tonerSupplies,
     tonerCheckedAt: detectedAt,
+    vncAvailable,
+    vncCheckedAt: detectedAt,
     statusCheckedAt: detectedAt,
   };
 
   return {
     online: true,
     status: "Online",
+    vncAvailable,
+    vncCheckedAt: detectedAt,
     statusCheckedAt: detectedAt,
     detectedAt,
     fields,
@@ -1025,12 +1095,18 @@ async function refreshPrinterStatuses() {
 
       const nextPrinters = await mapWithConcurrency(printers, PING_CONCURRENCY, async (printer) => {
         const isOnline = await pingPrinter(printer.ip);
-        const tonerInfo = isOnline
-          ? await detectPrinterSupplies(printer.ip)
-          : {
-              tonerStatus: "Unavailable",
-              tonerSupplies: [],
-            };
+        const [tonerInfo, vncAvailable] = isOnline
+          ? await Promise.all([
+              detectPrinterSupplies(printer.ip),
+              checkVncAvailable(printer.ip),
+            ])
+          : [
+              {
+                tonerStatus: "Unavailable",
+                tonerSupplies: [],
+              },
+              false,
+            ];
 
         return {
           ...printer,
@@ -1039,6 +1115,8 @@ async function refreshPrinterStatuses() {
           tonerStatus: tonerInfo.tonerStatus,
           tonerSupplies: tonerInfo.tonerSupplies,
           tonerCheckedAt: checkedAt,
+          vncAvailable,
+          vncCheckedAt: checkedAt,
         };
       });
 
@@ -1224,6 +1302,8 @@ app.post("/api/locations/:locationId/printers", async (req, res, next) => {
       tonerStatus: req.body.tonerStatus || "Unknown",
       tonerSupplies: parseJsonArray(req.body.tonerSupplies),
       tonerCheckedAt: req.body.tonerCheckedAt || "",
+      vncAvailable: parseBoolean(req.body.vncAvailable),
+      vncCheckedAt: req.body.vncCheckedAt || "",
       statusCheckedAt: req.body.statusCheckedAt || "",
       createdAt: now,
       updatedAt: now,
@@ -1272,6 +1352,10 @@ app.put("/api/locations/:locationId/printers/:printerId", async (req, res, next)
       tonerStatus: req.body.tonerStatus || printers[printerIndex].tonerStatus || "Unknown",
       tonerSupplies: tonerSupplies.length ? tonerSupplies : printers[printerIndex].tonerSupplies || [],
       tonerCheckedAt: req.body.tonerCheckedAt || printers[printerIndex].tonerCheckedAt || "",
+      vncAvailable: req.body.vncAvailable === undefined
+        ? Boolean(printers[printerIndex].vncAvailable)
+        : parseBoolean(req.body.vncAvailable),
+      vncCheckedAt: req.body.vncCheckedAt || printers[printerIndex].vncCheckedAt || "",
       statusCheckedAt: req.body.statusCheckedAt || printers[printerIndex].statusCheckedAt || "",
       updatedAt: new Date().toISOString(),
     };
