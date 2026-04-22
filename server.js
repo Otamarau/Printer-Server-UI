@@ -15,6 +15,7 @@ const app = express();
 const CONFIG_FILE = process.env.CONFIG_FILE
   ? path.resolve(process.env.CONFIG_FILE)
   : path.join(__dirname, "config.json");
+const CONFIG_EXAMPLE_FILE = path.join(__dirname, "config.example.json");
 const config = loadConfig(CONFIG_FILE);
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public", "printerWebsite2");
@@ -54,6 +55,11 @@ function loadConfig(filePath) {
     return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") {
+      if (!process.env.CONFIG_FILE && fsSync.existsSync(CONFIG_EXAMPLE_FILE)) {
+        fsSync.copyFileSync(CONFIG_EXAMPLE_FILE, filePath);
+        return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
+      }
+
       return {};
     }
 
@@ -105,6 +111,8 @@ function findLocationByPath(pathValue) {
 }
 
 async function loadLocationsFromData() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+
   const files = await fs.readdir(DATA_DIR);
 
   locations = [];

@@ -33,7 +33,7 @@ Create a local config file:
 cp config.example.json config.json
 ```
 
-Edit `config.json` and set your deletion PIN:
+The server will also create `config.json` from `config.example.json` on first startup if it is missing. Edit `config.json` and set your deletion PIN:
 
 ```json
 {
@@ -84,7 +84,7 @@ Environment variables override config values where supported.
 
 ## Data
 
-Location and printer records are stored as JSON files in `data/`. Each location file contains the location metadata, vendor details, and printer list.
+Location and printer records are stored as JSON files in `data/`. The server creates this directory on startup if it does not already exist. Each location file contains the location metadata, vendor details, and printer list.
 
 The `data/` directory is intentionally ignored. To publish a clean open-source repository, include only example or anonymized data if you choose to add sample files.
 
