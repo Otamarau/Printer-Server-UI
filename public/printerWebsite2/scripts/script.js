@@ -312,6 +312,7 @@ function renderTableActions() {
   return `
     <div class="table-actions">
       <button type="button" class="btn btn-primary" id="update-vendor-button">Update Vendor</button>
+      <button type="button" class="btn btn-info" id="download-location-button">Download Location</button>
       <button type="button" class="btn btn-danger" id="delete-location-button">Delete Location</button>
     </div>
   `;
@@ -319,6 +320,7 @@ function renderTableActions() {
 
 function attachTableActions() {
   document.querySelector("#update-vendor-button")?.addEventListener("click", renderVendorForm);
+  document.querySelector("#download-location-button")?.addEventListener("click", downloadLocation);
   document.querySelector("#delete-location-button")?.addEventListener("click", deleteLocation);
 }
 
@@ -792,6 +794,14 @@ async function deletePrinter(printerId) {
   });
 
   await loadPrinters(activeLocationId);
+}
+
+function downloadLocation() {
+  if (!activeLocationId) {
+    return;
+  }
+
+  window.location.href = `/api/locations/${encodeURIComponent(activeLocationId)}/download`;
 }
 
 async function deleteLocation() {

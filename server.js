@@ -20,6 +20,11 @@ const config = loadConfig(CONFIG_FILE);
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public", "printerWebsite2");
 const DATA_DIR = path.join(__dirname, "data");
+const BACKUP_DIR = process.env.BACKUP_DIR
+  ? path.resolve(process.env.BACKUP_DIR)
+  : path.join(DATA_DIR, "backups");
+const BACKUP_INTERVAL_MS = Number(process.env.BACKUP_INTERVAL_MS || config.backupIntervalMs) || 24 * 60 * 60 * 1000;
+const BACKUP_RETENTION_COUNT = Number(process.env.BACKUP_RETENTION_COUNT || config.backupRetentionCount) || 30;
 const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS) || 5 * 60 * 1000;
 const PING_TIMEOUT_MS = Number(process.env.PING_TIMEOUT_MS) || 1000;
 const PING_CONCURRENCY = Number(process.env.PING_CONCURRENCY) || 10;
@@ -153,6 +158,78 @@ async function writePrinters(location, printers) {
   };
 
   await fs.writeFile(locationFilePath(location), `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function backupTimestamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+async function listDataJsonFiles() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+
+  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
+
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+async function pruneOldBackups() {
+  if (BACKUP_RETENTION_COUNT < 1) {
+    return;
+  }
+
+  const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true });
+  const backupDirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  const oldBackupDirs = backupDirs.slice(BACKUP_RETENTION_COUNT);
+
+  await Promise.all(
+    oldBackupDirs.map((backupDir) => (
+      fs.rm(path.join(BACKUP_DIR, backupDir), { recursive: true, force: true })
+    )),
+  );
+}
+
+async function backupDatabase() {
+  const files = await listDataJsonFiles();
+
+  if (!files.length) {
+    return null;
+  }
+
+  const backupPath = path.join(BACKUP_DIR, backupTimestamp());
+  await fs.mkdir(backupPath, { recursive: true });
+
+  await Promise.all(
+    files.map((file) => (
+      fs.copyFile(path.join(DATA_DIR, file), path.join(backupPath, file))
+    )),
+  );
+
+  await pruneOldBackups();
+
+  return {
+    backupPath,
+    fileCount: files.length,
+  };
+}
+
+async function runScheduledBackup() {
+  try {
+    const result = await backupDatabase();
+
+    if (result) {
+      console.log(`Backed up ${result.fileCount} data file(s) to ${result.backupPath}`);
+    }
+  } catch (error) {
+    console.error("Database backup failed:", error);
+  }
 }
 
 function sendWebSocketFrame(socket, opcode, payload = Buffer.alloc(0)) {
@@ -1163,6 +1240,21 @@ app.put("/api/locations/:locationId/vendor", async (req, res, next) => {
   }
 });
 
+app.get("/api/locations/:locationId/download", (req, res, next) => {
+  const location = findLocation(req.params.locationId);
+
+  if (!location) {
+    res.status(404).json({ error: "Location not found" });
+    return;
+  }
+
+  res.download(locationFilePath(location), location.file, (error) => {
+    if (error && !res.headersSent) {
+      next(error);
+    }
+  });
+});
+
 app.post("/api/printers/check-status", async (req, res, next) => {
   try {
     await refreshPrinterStatuses();
@@ -1363,8 +1455,11 @@ async function startServer() {
   server.listen(PORT, () => {
     console.log(`Printer website server running at http://localhost:${PORT}`);
     console.log(`Printer status checks running every ${Math.round(PING_INTERVAL_MS / 1000)} seconds`);
+    console.log(`JSON data backups running every ${Math.round(BACKUP_INTERVAL_MS / 1000)} seconds`);
   });
 
+  setTimeout(runScheduledBackup, 5000);
+  setInterval(runScheduledBackup, BACKUP_INTERVAL_MS);
   setTimeout(refreshPrinterStatuses, 1000);
   setInterval(refreshPrinterStatuses, PING_INTERVAL_MS);
 }
