@@ -73,6 +73,8 @@ Environment variables override config values where supported.
 | `BACKUP_INTERVAL_MS` | `86400000` | Interval for scheduled JSON data backups |
 | `BACKUP_RETENTION_COUNT` | `30` | Number of backup snapshots to keep |
 | `DELETE_LOCATION_PIN` | config value | PIN required to delete a location |
+| `HTTPS_CERT_FILE` | config value | Certificate file for serving HTTPS |
+| `HTTPS_KEY_FILE` | config value | Private key file for serving HTTPS |
 | `PORT` | `3000` | HTTP server port |
 | `PING_INTERVAL_MS` | `300000` | Interval for background printer status checks |
 | `PING_TIMEOUT_MS` | `1000` | Ping timeout per printer |
@@ -97,6 +99,18 @@ The `data/` directory is intentionally ignored. To publish a clean open-source r
 ## noVNC
 
 This project includes noVNC under `public/printerWebsite2/vendor/novnc-source` for browser VNC support. noVNC is mainly licensed under MPL-2.0, with bundled dependencies and assets covered by their own compatible licenses. Keep the noVNC license files with the vendored source when publishing or redistributing this project.
+
+Password-protected VNC sessions need the browser page to run in a secure context. Use `https://...` when opening the site from another machine or by IP address. Local `http://localhost:3000` is also treated as secure by browsers.
+
+To serve the app over HTTPS, provide a certificate and key:
+
+```powershell
+$env:HTTPS_CERT_FILE = "C:\path\to\cert.pem"
+$env:HTTPS_KEY_FILE = "C:\path\to\key.pem"
+npm start
+```
+
+You can also set `httpsCertFile` and `httpsKeyFile` in `config.json`.
 
 See:
 

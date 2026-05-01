@@ -22,10 +22,18 @@
                     <h2>Loading locations...</h2>
                 </div>
             </div>
+            <div class="mobile-location-con">
+                <span class="mobile-location-label">Location</span>
+                <button id="mobile-location-button" class="mobile-location-button" type="button" aria-expanded="false" aria-controls="mobile-location-menu">
+                    Loading locations...
+                </button>
+                <div id="mobile-location-menu" class="mobile-location-menu" hidden></div>
+            </div>
             <div class="location-row add-location-con">
                 <button id="add-location-button" type="button" class="btn btn-success" title="Add location">
                     <h2><i class="fa-solid fa-plus"></i></h2>
                 </button>
+
             </div>
 
 
@@ -35,6 +43,9 @@
                 <div>
                     <h1 id="vendor-title">Vendor: Loading...</h1>
                     <div class="header-actions">
+                        <button id="add-driver-button" type="button" class="btn btn-success" title="Add driver">
+                            <h2><i class="fa-solid fa-plus"></i></h2>
+                        </button>
                         <button id="dark-mode-button" type="button" class="btn btn-primary" title="Toggle dark mode">
                             <i class="fa-solid fa-moon"></i>
                         </button>

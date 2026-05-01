@@ -145,6 +145,21 @@ export class H264Context {
         throw new Error("Failed to decode frame: " + e.message);
     }
 
+    close() {
+        for (const pending of this._pendingFrames) {
+            if (pending.frame !== null) {
+                pending.frame.close();
+                pending.frame = null;
+            }
+        }
+        this._pendingFrames = [];
+
+        if (this._decoder !== null && this._decoder.state !== 'closed') {
+            this._decoder.close();
+        }
+        this._decoder = null;
+    }
+
     _configureDecoder(profileIdc, constraintSet, levelIdc) {
         if (this._decoder === null || this._decoder.state === 'closed') {
             this._decoder = new VideoDecoder({
@@ -264,6 +279,7 @@ export default class H264Decoder {
         const maxContexts = 64;
         if (Object.keys(this._contexts).length >= maxContexts) {
             let oldestContextId = this._findOldestContextId();
+            this._contexts[oldestContextId].close();
             delete this._contexts[oldestContextId];
         }
         let context = new H264Context(width, height);
@@ -277,10 +293,15 @@ export default class H264Decoder {
     }
 
     _resetContext(x, y, width, height) {
-        delete this._contexts[this._contextId(x, y, width, height)];
+        const contextId = this._contextId(x, y, width, height);
+        this._contexts[contextId]?.close();
+        delete this._contexts[contextId];
     }
 
     _resetAllContexts() {
+        for (const context of Object.values(this._contexts)) {
+            context.close();
+        }
         this._contexts = {};
     }
 

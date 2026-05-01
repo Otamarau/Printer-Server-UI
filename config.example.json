@@ -1,3 +1,4 @@
 {
-  "deleteLocationPin": "change-me"
+  "deleteLocationPin": "change-me",
+  "driverUploadJsonLimit": "150mb"
 }

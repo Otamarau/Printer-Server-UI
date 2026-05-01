@@ -1,6 +1,9 @@
 const locationContainer = document.querySelector("#location-row-con");
+const mobileLocationButton = document.querySelector("#mobile-location-button");
+const mobileLocationMenu = document.querySelector("#mobile-location-menu");
 const vendorTitle = document.querySelector("#vendor-title");
 const addPrinterButton = document.querySelector("#add-printer-button");
+const addDriverButton = document.querySelector("#add-driver-button");
 const addLocationButton = document.querySelector("#add-location-button");
 const darkModeButton = document.querySelector("#dark-mode-button");
 const tableContainer = document.querySelector("#table-con");
@@ -11,6 +14,10 @@ let printers = [];
 let currentView = "table";
 let rfbClient = null;
 let noVncModulePromise = null;
+let lastVncFailureReason = "";
+let vncFramebufferUpdates = 0;
+let vncConnectedAt = 0;
+let vncFrameKickTimer = null;
 
 const fields = [
   { key: "name", label: "Name", placeholder: "Enter name" },
@@ -153,6 +160,38 @@ function renderVncCell(printer) {
   `;
 }
 
+function driverTitle(printer) {
+  if (!printer.driver) {
+    return "";
+  }
+
+  const details = [
+    printer.driver.fileName,
+    printer.driver.version ? `Version: ${printer.driver.version}` : "",
+    printer.driver.createdAt ? `Uploaded: ${new Date(printer.driver.createdAt).toLocaleString()}` : "",
+    printer.driver.notes || "",
+  ].filter(Boolean).join("\n");
+
+  return details ? ` title="${escapeHtml(details)}"` : "";
+}
+
+function renderDriverCell(printer) {
+  if (!printer.driver?.downloadUrl) {
+    return "";
+  }
+
+  return `
+    <a
+      class="btn btn-outline-secondary download-driver-button"
+      href="${escapeHtml(printer.driver.downloadUrl)}"
+      ${driverTitle(printer)}
+      aria-label="Download driver"
+    >
+      <i class="fa-solid fa-download"></i>
+    </a>
+  `;
+}
+
 function setInputValue(form, name, value, options = {}) {
   const input = form.elements[name];
 
@@ -181,6 +220,46 @@ function renderSiteLocationSelect(selectedLocationId) {
               </option>
             `,
           )
+          .join("")}
+      </select>
+    </div>
+  `;
+}
+
+function availablePrinterModels() {
+  return [...new Set(
+    printers
+      .map((printer) => String(printer.model || "").trim())
+      .filter(Boolean),
+  )].sort((left, right) => left.localeCompare(right));
+}
+
+function renderDriverModelSelect() {
+  const models = availablePrinterModels();
+
+  if (!models.length) {
+    return `
+      <div class="form-group">
+        <label for="driverModel">Printer Model</label>
+        <input
+          type="text"
+          class="form-control"
+          id="driverModel"
+          name="model"
+          placeholder="No printer models found for this location"
+          disabled
+        >
+      </div>
+    `;
+  }
+
+  return `
+    <div class="form-group">
+      <label for="driverModel">Printer Model</label>
+      <select class="form-select" id="driverModel" name="model" required>
+        <option value="">Select a printer model</option>
+        ${models
+          .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
           .join("")}
       </select>
     </div>
@@ -217,11 +296,49 @@ function renderLocations() {
       `,
     )
     .join("");
+  const currentLocation = activeLocation();
+
+  mobileLocationButton.textContent = currentLocation?.name || (locations.length ? "Choose location" : "No locations");
+  mobileLocationButton.disabled = !locations.length;
+  mobileLocationMenu.innerHTML = locations.length
+    ? locations
+        .map(
+          (location) => `
+            <button
+              class="mobile-location-option ${location.id === activeLocationId ? "active" : ""}"
+              type="button"
+              data-location-id="${escapeHtml(location.id)}"
+            >
+              ${escapeHtml(location.name)}
+            </button>
+          `,
+        )
+        .join("")
+    : '<span class="mobile-location-empty">No locations</span>';
   addLocationButton.parentElement.classList.remove("active");
 
   locationContainer.querySelectorAll(".location-row").forEach((button) => {
     button.addEventListener("click", () => loadPrinters(button.dataset.locationId));
   });
+
+  mobileLocationMenu.querySelectorAll(".mobile-location-option").forEach((button) => {
+    button.addEventListener("click", () => {
+      closeMobileLocationMenu();
+      loadPrinters(button.dataset.locationId).catch(console.error);
+    });
+  });
+}
+
+function closeMobileLocationMenu() {
+  mobileLocationMenu.hidden = true;
+  mobileLocationButton.setAttribute("aria-expanded", "false");
+}
+
+function toggleMobileLocationMenu() {
+  const isOpen = !mobileLocationMenu.hidden;
+
+  mobileLocationMenu.hidden = isOpen;
+  mobileLocationButton.setAttribute("aria-expanded", String(!isOpen));
 }
 
 function renderVendor() {
@@ -265,6 +382,7 @@ function renderTable() {
             <th scope="col">Manufacturer</th>
             <th scope="col">Status</th>
             <th scope="col" class="toner-col">Toner</th>
+            <th scope="col" class="driver-col">Driver</th>
             <th scope="col" class="vnc-col">VNC</th>
             <th scope="col" class="action-col"></th>
           </tr>
@@ -274,17 +392,18 @@ function renderTable() {
             .map(
               (printer) => `
                 <tr>
-                  <th scope="row">${escapeHtml(printer.name)}</th>
-                  <td><a href="http://${escapeHtml(printer.ip)}" target="_blank" rel="noreferrer">${escapeHtml(printer.ip)}</a></td>
-                  <td>${escapeHtml(printer.model)}</td>
-                  <td>${escapeHtml(printer.serialNo)}</td>
-                  <td>${escapeHtml(printer.location)}</td>
-                  <td>${escapeHtml(printer.department)}</td>
-                  <td>${escapeHtml(printer.manufacturer)}</td>
-                  <td${statusCheckedTitle(printer)}>${statusBadge(printer.status)}</td>
-                  <td class="toner-cell"${tonerCheckedTitle(printer)}>${tonerBadge(printer.tonerStatus)}</td>
-                  <td class="vnc-cell">${renderVncCell(printer)}</td>
-                  <td class="action-cell">
+                  <th scope="row" data-label="Name">${escapeHtml(printer.name)}</th>
+                  <td data-label="IP"><a href="http://${escapeHtml(printer.ip)}" target="_blank" rel="noreferrer">${escapeHtml(printer.ip)}</a></td>
+                  <td data-label="Model">${escapeHtml(printer.model)}</td>
+                  <td data-label="SerialNO">${escapeHtml(printer.serialNo)}</td>
+                  <td data-label="Location">${escapeHtml(printer.location)}</td>
+                  <td data-label="Department">${escapeHtml(printer.department)}</td>
+                  <td data-label="Manufacturer">${escapeHtml(printer.manufacturer)}</td>
+                  <td data-label="Status"${statusCheckedTitle(printer)}>${statusBadge(printer.status)}</td>
+                  <td data-label="Toner" class="toner-cell"${tonerCheckedTitle(printer)}>${tonerBadge(printer.tonerStatus)}</td>
+                  <td data-label="Driver" class="driver-cell">${renderDriverCell(printer)}</td>
+                  <td data-label="VNC" class="vnc-cell">${renderVncCell(printer)}</td>
+                  <td data-label="Edit" class="action-cell">
                     <button type="button" class="btn btn-success edit-printer-button" data-printer-id="${printer.id}" title="Edit printer">
                       <i class="fa-solid fa-pen"></i>
                     </button>
@@ -463,6 +582,7 @@ function ensureVncModal() {
       </div>
       <div class="vnc-password-panel" id="vnc-password-panel" hidden>
         <form id="vnc-password-form" class="vnc-password-form">
+          <input type="text" class="form-control" id="vnc-username-input" autocomplete="username" placeholder="VNC username" hidden>
           <input type="password" class="form-control" id="vnc-password-input" autocomplete="current-password" placeholder="VNC password">
           <button type="submit" class="btn btn-primary">Connect</button>
         </form>
@@ -485,9 +605,15 @@ function ensureVncModal() {
     event.preventDefault();
 
     const passwordInput = modal.querySelector("#vnc-password-input");
+    const usernameInput = modal.querySelector("#vnc-username-input");
     const passwordPanel = modal.querySelector("#vnc-password-panel");
+    const credentials = { password: passwordInput.value };
 
-    rfbClient?.sendCredentials({ password: passwordInput.value });
+    if (!usernameInput.hidden) {
+      credentials.username = usernameInput.value;
+    }
+
+    rfbClient?.sendCredentials(credentials);
     passwordInput.value = "";
     passwordPanel.hidden = true;
     setVncStatus("Authenticating...");
@@ -505,6 +631,11 @@ function setVncStatus(message) {
 }
 
 function closeVncModal() {
+  if (vncFrameKickTimer) {
+    window.clearInterval(vncFrameKickTimer);
+    vncFrameKickTimer = null;
+  }
+
   if (rfbClient) {
     rfbClient.disconnect();
     rfbClient = null;
@@ -516,13 +647,16 @@ function closeVncModal() {
     modal.classList.remove("open");
     modal.querySelector("#vnc-screen").replaceChildren();
     modal.querySelector("#vnc-password-panel").hidden = true;
+    modal.querySelector("#vnc-username-input").value = "";
+    modal.querySelector("#vnc-username-input").hidden = true;
+    modal.querySelector("#vnc-password-input").value = "";
     setVncStatus("Disconnected");
   }
 }
 
 function loadNoVnc() {
   if (!noVncModulePromise) {
-    noVncModulePromise = import("/vendor/novnc-source/core/rfb.js");
+    noVncModulePromise = import("/vendor/novnc-source/core/rfb.js?v=frame-kick-20260428");
   }
 
   return noVncModulePromise;
@@ -534,6 +668,8 @@ async function openVnc(ip, printerName, button) {
   const screen = modal.querySelector("#vnc-screen");
   const title = modal.querySelector("#vnc-modal-title");
   const passwordPanel = modal.querySelector("#vnc-password-panel");
+  const usernameInput = modal.querySelector("#vnc-username-input");
+  const passwordInput = modal.querySelector("#vnc-password-input");
 
   try {
     if (rfbClient) {
@@ -543,6 +679,16 @@ async function openVnc(ip, printerName, button) {
 
     screen.replaceChildren();
     passwordPanel.hidden = true;
+    usernameInput.value = "";
+    usernameInput.hidden = true;
+    passwordInput.value = "";
+    lastVncFailureReason = "";
+    vncFramebufferUpdates = 0;
+    vncConnectedAt = 0;
+    if (vncFrameKickTimer) {
+      window.clearInterval(vncFrameKickTimer);
+      vncFrameKickTimer = null;
+    }
     title.textContent = `${printerName || "Printer"} VNC`;
     modal.classList.add("open");
     setVncStatus("Loading browser VNC...");
@@ -555,25 +701,76 @@ async function openVnc(ip, printerName, button) {
 
     rfbClient = new RFB(screen, vncUrl);
     rfbClient.scaleViewport = true;
-    rfbClient.resizeSession = true;
+    rfbClient.resizeSession = false;
     rfbClient.clipViewport = false;
     rfbClient.showDotCursor = true;
 
     rfbClient.addEventListener("connect", () => {
-      setVncStatus(`Connected to ${ip}`);
+      vncConnectedAt = Date.now();
+      setVncStatus(`Connected to ${ip}; waiting for screen data...`);
+
+      rfbClient.requestFrameUpdate?.(false);
+      vncFrameKickTimer = window.setInterval(() => {
+        if (!rfbClient || vncFramebufferUpdates > 0 || Date.now() - vncConnectedAt > 12000) {
+          window.clearInterval(vncFrameKickTimer);
+          vncFrameKickTimer = null;
+          return;
+        }
+
+        rfbClient.requestFrameUpdate?.(false);
+      }, 1000);
+
+      window.setTimeout(() => {
+        if (rfbClient && vncConnectedAt && vncFramebufferUpdates === 0) {
+          const canvas = screen.querySelector("canvas");
+          const canvasSize = canvas ? `${canvas.width}x${canvas.height}` : "no canvas";
+
+          setVncStatus(`Connected, but no screen updates received yet (${canvasSize})`);
+        }
+      }, 3500);
     });
     rfbClient.addEventListener("disconnect", (event) => {
-      const reason = event.detail.reason || "Connection failed";
+      if (vncFrameKickTimer) {
+        window.clearInterval(vncFrameKickTimer);
+        vncFrameKickTimer = null;
+      }
+
+      const reason = lastVncFailureReason || "Connection failed";
 
       setVncStatus(event.detail.clean ? "Disconnected" : reason);
     });
     rfbClient.addEventListener("securityfailure", (event) => {
-      setVncStatus(event.detail.reason || "VNC authentication failed");
+      lastVncFailureReason = event.detail.reason || "VNC authentication failed. Check the VNC password and auth settings.";
+      setVncStatus(lastVncFailureReason);
     });
-    rfbClient.addEventListener("credentialsrequired", () => {
-      setVncStatus("Password required");
+    rfbClient.addEventListener("credentialsrequired", (event) => {
+      const requiredTypes = event.detail?.types || ["password"];
+      const needsUsername = requiredTypes.includes("username");
+
+      usernameInput.hidden = !needsUsername;
+      setVncStatus(needsUsername ? "Username and password required" : "Password required");
       passwordPanel.hidden = false;
-      modal.querySelector("#vnc-password-input").focus();
+      (needsUsername ? usernameInput : passwordInput).focus();
+    });
+    rfbClient.addEventListener("desktopname", (event) => {
+      const name = event.detail?.name || "remote screen";
+
+      setVncStatus(`Connected to ${ip}: ${name}`);
+    });
+    rfbClient.addEventListener("framebufferupdate", (event) => {
+      vncFramebufferUpdates += 1;
+      if (vncFrameKickTimer) {
+        window.clearInterval(vncFrameKickTimer);
+        vncFrameKickTimer = null;
+      }
+
+      const canvas = screen.querySelector("canvas");
+      const canvasSize = canvas ? `${canvas.width}x${canvas.height}` : "no canvas";
+      const remoteSize = event.detail?.width && event.detail?.height
+        ? `${event.detail.width}x${event.detail.height}`
+        : "unknown size";
+
+      setVncStatus(`Connected: ${remoteSize}, updates ${vncFramebufferUpdates}, canvas ${canvasSize}`);
     });
   } catch (error) {
     console.error(error);
@@ -693,6 +890,80 @@ function renderVendorForm() {
   document.querySelector("#vendorName").focus();
 }
 
+function renderDriverForm() {
+  currentView = "form";
+  const location = activeLocation();
+  const models = availablePrinterModels();
+
+  vendorTitle.textContent = location
+    ? `Add Driver: ${location.name}`
+    : "Add Driver";
+
+  tableContainer.innerHTML = `
+    <form id="driver-form" class="compact-form">
+      <input type="hidden" name="siteLocationId" value="${escapeHtml(activeLocationId)}">
+      ${renderDriverModelSelect()}
+      <div class="form-group">
+        <label for="driverVersion">Driver Version</label>
+        <input
+          type="text"
+          class="form-control"
+          id="driverVersion"
+          name="version"
+          placeholder="Optional version number"
+        >
+      </div>
+      <div class="form-group">
+        <label for="driverNotes">Notes</label>
+        <textarea
+          class="form-control"
+          id="driverNotes"
+          name="notes"
+          rows="4"
+          placeholder="Optional notes about this driver"
+        ></textarea>
+      </div>
+      <div class="form-group">
+        <label for="driverFile">Driver File</label>
+        <input
+          type="file"
+          class="form-control"
+          id="driverFile"
+          name="driverFile"
+          ${models.length ? "required" : "disabled"}
+        >
+      </div>
+      <div class="detect-status" id="driver-form-status">
+        ${models.length ? "" : "Add a printer with a model first so a driver can be linked to it."}
+      </div>
+      <div class="button-con">
+        <button type="submit" class="btn btn-success" ${models.length ? "" : "disabled"}>Upload Driver</button>
+        <button type="button" class="btn btn-primary" id="back-button">Back</button>
+      </div>
+    </form>
+  `;
+
+  document.querySelector("#driver-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveDriver();
+  });
+  document.querySelector("#back-button").addEventListener("click", () => loadPrinters(activeLocationId));
+
+  if (models.length) {
+    document.querySelector("#driverModel").focus();
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Unable to read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function loadLocations() {
   locations = await apiRequest("/api/locations");
   activeLocationId = findLocationFromPath()?.id || locations[0]?.id || "";
@@ -782,6 +1053,49 @@ async function savePrinter(printerId) {
   await loadPrinters(selectedLocationId);
 }
 
+async function saveDriver() {
+  const form = document.querySelector("#driver-form");
+  const statusElement = document.querySelector("#driver-form-status");
+  const submitButton = form.querySelector('button[type="submit"]');
+  const fileInput = form.elements.driverFile;
+  const file = fileInput.files?.[0];
+
+  if (!file) {
+    statusElement.textContent = "Choose a driver file first.";
+    return;
+  }
+
+  statusElement.textContent = "Uploading driver...";
+  submitButton.disabled = true;
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const payload = {
+      siteLocationId: form.elements.siteLocationId.value,
+      model: form.elements.model.value.trim(),
+      version: form.elements.version.value.trim(),
+      notes: form.elements.notes.value.trim(),
+      fileName: file.name,
+      contentType: file.type || "application/octet-stream",
+      fileData: dataUrl,
+    };
+
+    const result = await apiRequest("/api/drivers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    statusElement.textContent = `Uploaded ${result.fileName} for ${result.model}.`;
+    window.alert(`Driver uploaded for ${result.model}.`);
+    await loadPrinters(payload.siteLocationId || activeLocationId);
+  } catch (error) {
+    console.error(error);
+    statusElement.textContent = "Unable to upload the driver.";
+  } finally {
+    submitButton.disabled = false;
+  }
+}
+
 async function deletePrinter(printerId) {
   const shouldDelete = window.confirm("Delete this printer?");
 
@@ -849,7 +1163,18 @@ async function deleteLocation() {
 }
 
 addPrinterButton.addEventListener("click", () => renderForm());
+addDriverButton.addEventListener("click", renderDriverForm);
 addLocationButton.addEventListener("click", renderLocationForm);
+mobileLocationButton.addEventListener("click", toggleMobileLocationMenu);
+document.addEventListener("click", (event) => {
+  if (
+    !mobileLocationMenu.hidden
+    && !mobileLocationMenu.contains(event.target)
+    && !mobileLocationButton.contains(event.target)
+  ) {
+    closeMobileLocationMenu();
+  }
+});
 darkModeButton.addEventListener("click", () => {
   applyDarkMode(!document.body.classList.contains("dark-mode"));
 });

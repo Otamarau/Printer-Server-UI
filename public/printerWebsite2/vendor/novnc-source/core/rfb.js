@@ -10,7 +10,7 @@
 import { toUnsigned32bit, toSigned32bit } from './util/int.js';
 import * as Log from './util/logging.js';
 import { encodeUTF8, decodeUTF8 } from './util/strings.js';
-import { dragThreshold, supportsWebCodecsH264Decode } from './util/browser.js';
+import { dragThreshold } from './util/browser.js';
 import { clientToElement } from './util/element.js';
 import { setCapture } from './util/events.js';
 import EventTargetMixin from './util/eventtarget.js';
@@ -36,7 +36,6 @@ import TightDecoder from "./decoders/tight.js";
 import TightPNGDecoder from "./decoders/tightpng.js";
 import ZRLEDecoder from "./decoders/zrle.js";
 import JPEGDecoder from "./decoders/jpeg.js";
-import H264Decoder from "./decoders/h264.js";
 
 // How many seconds to wait for a disconnect to finish
 const DISCONNECT_TIMEOUT = 3;
@@ -255,7 +254,6 @@ export default class RFB extends EventTargetMixin {
         this._decoders[encodings.encodingTightPNG] = new TightPNGDecoder();
         this._decoders[encodings.encodingZRLE] = new ZRLEDecoder();
         this._decoders[encodings.encodingJPEG] = new JPEGDecoder();
-        this._decoders[encodings.encodingH264] = new H264Decoder();
 
         // NB: nothing that needs explicit teardown should be done
         // before this point, since this can throw an exception
@@ -547,6 +545,14 @@ export default class RFB extends EventTargetMixin {
 
     toBlob(callback, type, quality) {
         return this._display.toBlob(callback, type, quality);
+    }
+
+    requestFrameUpdate(incremental = false) {
+        if (this._rfbConnectionState !== 'connected' || this._fbWidth <= 0 || this._fbHeight <= 0) {
+            return;
+        }
+
+        RFB.messages.fbUpdateRequest(this._sock, incremental, 0, 0, this._fbWidth, this._fbHeight);
     }
 
     // ===== PRIVATE METHODS =====
@@ -2232,21 +2238,9 @@ export default class RFB extends EventTargetMixin {
     _sendEncodings() {
         const encs = [];
 
-        // In preference order
-        encs.push(encodings.encodingCopyRect);
-        // Only supported with full depth support
-        if (this._fbDepth == 24) {
-            if (supportsWebCodecsH264Decode) {
-                encs.push(encodings.encodingH264);
-            }
-            encs.push(encodings.encodingTight);
-            encs.push(encodings.encodingTightPNG);
-            encs.push(encodings.encodingZRLE);
-            encs.push(encodings.encodingJPEG);
-            encs.push(encodings.encodingHextile);
-            encs.push(encodings.encodingRRE);
-            encs.push(encodings.encodingZlib);
-        }
+        // Printer VNC implementations can advertise support for richer
+        // encodings but then send blank or stalled frames. Raw is the
+        // baseline RFB encoding and is the most compatible fallback.
         encs.push(encodings.encodingRaw);
 
         // Psuedo-encoding settings
@@ -2623,6 +2617,7 @@ export default class RFB extends EventTargetMixin {
             if (this._sock.rQwait("FBU header", 3, 1)) { return false; }
             this._sock.rQskipBytes(1);  // Padding
             this._FBU.rects = this._sock.rQshift16();
+            this._lastFramebufferUpdateRects = this._FBU.rects;
 
             // Make sure the previous frame is fully rendered first
             // to avoid building up an excessive queue
@@ -2663,6 +2658,13 @@ export default class RFB extends EventTargetMixin {
         }
 
         this._display.flip();
+        this.dispatchEvent(new CustomEvent(
+            "framebufferupdate",
+            { detail: {
+                rects: this._lastFramebufferUpdateRects,
+                width: this._fbWidth,
+                height: this._fbHeight,
+            } }));
 
         return true;  // We finished this FBU
     }

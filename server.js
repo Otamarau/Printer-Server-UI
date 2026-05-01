@@ -5,6 +5,7 @@ const dgram = require("node:dgram");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
+const https = require("node:https");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -18,8 +19,12 @@ const CONFIG_FILE = process.env.CONFIG_FILE
 const CONFIG_EXAMPLE_FILE = path.join(__dirname, "config.example.json");
 const config = loadConfig(CONFIG_FILE);
 const PORT = Number(process.env.PORT) || 3000;
+const HTTPS_CERT_FILE = process.env.HTTPS_CERT_FILE || config.httpsCertFile || "";
+const HTTPS_KEY_FILE = process.env.HTTPS_KEY_FILE || config.httpsKeyFile || "";
 const PUBLIC_DIR = path.join(__dirname, "public", "printerWebsite2");
 const DATA_DIR = path.join(__dirname, "data");
+const DRIVERS_DIR = path.join(__dirname, "drivers");
+const DRIVER_INDEX_FILE = path.join(DRIVERS_DIR, "index.json");
 const BACKUP_DIR = process.env.BACKUP_DIR
   ? path.resolve(process.env.BACKUP_DIR)
   : path.join(DATA_DIR, "backups");
@@ -34,6 +39,9 @@ const SNMP_MAX_SUPPLIES = Number(process.env.SNMP_MAX_SUPPLIES) || 40;
 const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 const VNC_CONNECT_TIMEOUT_MS = Number(process.env.VNC_CONNECT_TIMEOUT_MS) || 5000;
 const VNC_SCAN_TIMEOUT_MS = Number(process.env.VNC_SCAN_TIMEOUT_MS) || 1500;
+const DRIVER_UPLOAD_JSON_LIMIT = process.env.DRIVER_UPLOAD_JSON_LIMIT
+  || config.driverUploadJsonLimit
+  || "150mb";
 const DELETE_LOCATION_PIN = process.env.DELETE_LOCATION_PIN || config.deleteLocationPin;
 const execFileAsync = promisify(execFile);
 const isWindows = os.platform() === "win32";
@@ -53,6 +61,7 @@ const activeVncConnections = new Map();
 
 let locations = [];
 
+app.use("/api/drivers", express.json({ limit: DRIVER_UPLOAD_JSON_LIMIT }));
 app.use(express.json());
 
 function loadConfig(filePath) {
@@ -96,6 +105,23 @@ function routeKey(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function safeFileSegment(value, fallback = "file") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || fallback;
+}
+
+function normalizeModelKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 function locationUrlPath(location) {
   return `/${displayPathSlug(location.name)}`;
 }
@@ -117,6 +143,7 @@ function findLocationByPath(pathValue) {
 
 async function loadLocationsFromData() {
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(DRIVERS_DIR, { recursive: true });
 
   const files = await fs.readdir(DATA_DIR);
 
@@ -158,6 +185,40 @@ async function writePrinters(location, printers) {
   };
 
   await fs.writeFile(locationFilePath(location), `${JSON.stringify(data, null, 2)}\n`);
+}
+
+async function readDriverIndex() {
+  try {
+    const file = await fs.readFile(DRIVER_INDEX_FILE, "utf8");
+    const data = JSON.parse(file);
+
+    return Array.isArray(data.drivers) ? data.drivers : [];
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+async function writeDriverIndex(drivers) {
+  await fs.mkdir(DRIVERS_DIR, { recursive: true });
+  await fs.writeFile(DRIVER_INDEX_FILE, `${JSON.stringify({ drivers }, null, 2)}\n`);
+}
+
+function latestDriverForPrinter(drivers, locationId, model) {
+  const modelKey = normalizeModelKey(model);
+
+  if (!modelKey) {
+    return null;
+  }
+
+  const matches = drivers
+    .filter((driver) => driver.locationId === locationId && normalizeModelKey(driver.model) === modelKey)
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
+
+  return matches[0] || null;
 }
 
 function backupTimestamp() {
@@ -1279,6 +1340,112 @@ app.post("/api/printers/detect", async (req, res, next) => {
   }
 });
 
+app.post("/api/drivers", async (req, res, next) => {
+  try {
+    const location = findLocation(req.body.siteLocationId);
+    const model = String(req.body.model || "").trim();
+    const fileName = path.basename(String(req.body.fileName || "").trim());
+    const contentType = String(req.body.contentType || "application/octet-stream").trim();
+    const version = String(req.body.version || "").trim();
+    const notes = String(req.body.notes || "").trim();
+    const fileData = String(req.body.fileData || "");
+
+    if (!location) {
+      res.status(400).json({ error: "Valid site location is required" });
+      return;
+    }
+
+    if (!model) {
+      res.status(400).json({ error: "Printer model is required" });
+      return;
+    }
+
+    if (!fileName || !fileData.startsWith("data:")) {
+      res.status(400).json({ error: "Driver file is required" });
+      return;
+    }
+
+    const printers = await readPrinters(location);
+    const knownModels = new Set(
+      printers
+        .map((printer) => String(printer.model || "").trim())
+        .filter(Boolean),
+    );
+
+    if (!knownModels.has(model)) {
+      res.status(400).json({ error: "Printer model must match one of the listed models" });
+      return;
+    }
+
+    const dataUrlMatch = fileData.match(/^data:([^;,]+)?;base64,(.+)$/);
+
+    if (!dataUrlMatch) {
+      res.status(400).json({ error: "Driver file data is invalid" });
+      return;
+    }
+
+    const modelDirName = safeFileSegment(model, "model");
+    const targetDir = path.join(DRIVERS_DIR, modelDirName);
+    const targetFileName = `${Date.now()}-${safeFileSegment(fileName)}`;
+    const targetPath = path.join(targetDir, targetFileName);
+    const buffer = Buffer.from(dataUrlMatch[2], "base64");
+    const now = new Date().toISOString();
+
+    await fs.mkdir(targetDir, { recursive: true });
+    await fs.writeFile(targetPath, buffer);
+
+    const drivers = await readDriverIndex();
+    const driverRecord = {
+      id: randomUUID(),
+      locationId: location.id,
+      locationName: location.name,
+      model,
+      version,
+      notes,
+      fileName,
+      storedFileName: targetFileName,
+      contentType,
+      fileSize: buffer.length,
+      relativePath: path.relative(__dirname, targetPath).replace(/\\/g, "/"),
+      createdAt: now,
+    };
+
+    drivers.push(driverRecord);
+    await writeDriverIndex(drivers);
+
+    res.status(201).json(driverRecord);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/drivers/:driverId/download", async (req, res, next) => {
+  try {
+    const drivers = await readDriverIndex();
+    const driver = drivers.find((item) => item.id === req.params.driverId);
+
+    if (!driver) {
+      res.status(404).json({ error: "Driver not found" });
+      return;
+    }
+
+    const absolutePath = path.resolve(__dirname, driver.relativePath || "");
+
+    if (!absolutePath.startsWith(path.resolve(DRIVERS_DIR))) {
+      res.status(400).json({ error: "Driver path is invalid" });
+      return;
+    }
+
+    res.download(absolutePath, driver.fileName, (error) => {
+      if (error && !res.headersSent) {
+        next(error);
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/locations/:locationId/printers", async (req, res, next) => {
   try {
     const location = findLocation(req.params.locationId);
@@ -1288,11 +1455,33 @@ app.get("/api/locations/:locationId/printers", async (req, res, next) => {
       return;
     }
 
+    const [printers, drivers] = await Promise.all([
+      readPrinters(location),
+      readDriverIndex(),
+    ]);
+    const printersWithDrivers = printers.map((printer) => {
+      const driver = latestDriverForPrinter(drivers, location.id, printer.model);
+
+      return {
+        ...printer,
+        driver: driver
+          ? {
+              id: driver.id,
+              fileName: driver.fileName,
+              version: driver.version,
+              notes: driver.notes,
+              createdAt: driver.createdAt,
+              downloadUrl: `/api/drivers/${encodeURIComponent(driver.id)}/download`,
+            }
+          : null,
+      };
+    });
+
     res.json({
       id: location.id,
       name: location.name,
       vendor: location.vendor,
-      printers: await readPrinters(location),
+      printers: printersWithDrivers,
     });
   } catch (error) {
     next(error);
@@ -1434,6 +1623,13 @@ app.use((req, res) => {
 });
 
 app.use((error, req, res, next) => {
+  if (error.type === "entity.too.large") {
+    res.status(413).json({
+      error: `Request body is too large. Driver uploads are limited to ${DRIVER_UPLOAD_JSON_LIMIT}.`,
+    });
+    return;
+  }
+
   console.error(error);
   res.status(500).json({ error: "Internal server error" });
 });
@@ -1441,7 +1637,13 @@ app.use((error, req, res, next) => {
 async function startServer() {
   await loadLocationsFromData();
 
-  const server = http.createServer(app);
+  const useHttps = Boolean(HTTPS_CERT_FILE && HTTPS_KEY_FILE);
+  const server = useHttps
+    ? https.createServer({
+      cert: fsSync.readFileSync(path.resolve(HTTPS_CERT_FILE)),
+      key: fsSync.readFileSync(path.resolve(HTTPS_KEY_FILE)),
+    }, app)
+    : http.createServer(app);
 
   server.on("upgrade", (req, socket) => {
     if (req.url?.startsWith("/api/vnc")) {
@@ -1453,7 +1655,12 @@ async function startServer() {
   });
 
   server.listen(PORT, () => {
-    console.log(`Printer website server running at http://localhost:${PORT}`);
+    const protocol = useHttps ? "https" : "http";
+
+    console.log(`Printer website server running at ${protocol}://localhost:${PORT}`);
+    if (!useHttps) {
+      console.log("Password-protected noVNC sessions require HTTPS or localhost in modern browsers.");
+    }
     console.log(`Printer status checks running every ${Math.round(PING_INTERVAL_MS / 1000)} seconds`);
     console.log(`JSON data backups running every ${Math.round(BACKUP_INTERVAL_MS / 1000)} seconds`);
   });
