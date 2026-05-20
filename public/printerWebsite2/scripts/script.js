@@ -11,6 +11,7 @@ const tableContainer = document.querySelector("#table-con");
 let locations = [];
 let activeLocationId = "";
 let printers = [];
+let driverModels = [];
 let currentView = "table";
 let rfbClient = null;
 let noVncModulePromise = null;
@@ -227,11 +228,12 @@ function renderSiteLocationSelect(selectedLocationId) {
 }
 
 function availablePrinterModels() {
-  return [...new Set(
-    printers
-      .map((printer) => String(printer.model || "").trim())
-      .filter(Boolean),
-  )].sort((left, right) => left.localeCompare(right));
+  const models = driverModels.length
+    ? driverModels
+    : printers.map((printer) => String(printer.model || "").trim());
+
+  return [...new Set(models.filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function renderDriverModelSelect() {
@@ -246,7 +248,7 @@ function renderDriverModelSelect() {
           class="form-control"
           id="driverModel"
           name="model"
-          placeholder="No printer models found for this location"
+          placeholder="No printer models found"
           disabled
         >
       </div>
@@ -890,18 +892,23 @@ function renderVendorForm() {
   document.querySelector("#vendorName").focus();
 }
 
-function renderDriverForm() {
+async function loadDriverModels() {
+  const data = await apiRequest("/api/printer-models");
+  driverModels = Array.isArray(data.models) ? data.models : [];
+}
+
+async function renderDriverForm() {
   currentView = "form";
-  const location = activeLocation();
+
+  tableContainer.innerHTML = "<h2>Loading printer models...</h2>";
+  await loadDriverModels();
+
   const models = availablePrinterModels();
 
-  vendorTitle.textContent = location
-    ? `Add Driver: ${location.name}`
-    : "Add Driver";
+  vendorTitle.textContent = "Add Driver";
 
   tableContainer.innerHTML = `
     <form id="driver-form" class="compact-form">
-      <input type="hidden" name="siteLocationId" value="${escapeHtml(activeLocationId)}">
       ${renderDriverModelSelect()}
       <div class="form-group">
         <label for="driverVersion">Driver Version</label>
@@ -1071,7 +1078,6 @@ async function saveDriver() {
   try {
     const dataUrl = await readFileAsDataUrl(file);
     const payload = {
-      siteLocationId: form.elements.siteLocationId.value,
       model: form.elements.model.value.trim(),
       version: form.elements.version.value.trim(),
       notes: form.elements.notes.value.trim(),
@@ -1087,7 +1093,7 @@ async function saveDriver() {
 
     statusElement.textContent = `Uploaded ${result.fileName} for ${result.model}.`;
     window.alert(`Driver uploaded for ${result.model}.`);
-    await loadPrinters(payload.siteLocationId || activeLocationId);
+    await loadPrinters(activeLocationId);
   } catch (error) {
     console.error(error);
     statusElement.textContent = "Unable to upload the driver.";
@@ -1163,7 +1169,12 @@ async function deleteLocation() {
 }
 
 addPrinterButton.addEventListener("click", () => renderForm());
-addDriverButton.addEventListener("click", renderDriverForm);
+addDriverButton.addEventListener("click", () => {
+  renderDriverForm().catch((error) => {
+    console.error(error);
+    tableContainer.innerHTML = "<h2>Unable to load printer models.</h2>";
+  });
+});
 addLocationButton.addEventListener("click", renderLocationForm);
 mobileLocationButton.addEventListener("click", toggleMobileLocationMenu);
 document.addEventListener("click", (event) => {

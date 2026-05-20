@@ -207,7 +207,7 @@ async function writeDriverIndex(drivers) {
   await fs.writeFile(DRIVER_INDEX_FILE, `${JSON.stringify({ drivers }, null, 2)}\n`);
 }
 
-function latestDriverForPrinter(drivers, locationId, model) {
+function latestDriverForPrinter(drivers, model) {
   const modelKey = normalizeModelKey(model);
 
   if (!modelKey) {
@@ -215,10 +215,29 @@ function latestDriverForPrinter(drivers, locationId, model) {
   }
 
   const matches = drivers
-    .filter((driver) => driver.locationId === locationId && normalizeModelKey(driver.model) === modelKey)
+    .filter((driver) => normalizeModelKey(driver.model) === modelKey)
     .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
 
   return matches[0] || null;
+}
+
+async function readKnownPrinterModels() {
+  const modelMap = new Map();
+
+  for (const location of locations) {
+    const printers = await readPrinters(location);
+
+    for (const printer of printers) {
+      const model = String(printer.model || "").trim();
+      const modelKey = normalizeModelKey(model);
+
+      if (model && modelKey && !modelMap.has(modelKey)) {
+        modelMap.set(modelKey, model);
+      }
+    }
+  }
+
+  return [...modelMap.values()].sort((left, right) => left.localeCompare(right));
 }
 
 function backupTimestamp() {
@@ -1316,6 +1335,16 @@ app.get("/api/locations/:locationId/download", (req, res, next) => {
   });
 });
 
+app.get("/api/printer-models", async (req, res, next) => {
+  try {
+    res.json({
+      models: await readKnownPrinterModels(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/printers/check-status", async (req, res, next) => {
   try {
     await refreshPrinterStatuses();
@@ -1342,18 +1371,12 @@ app.post("/api/printers/detect", async (req, res, next) => {
 
 app.post("/api/drivers", async (req, res, next) => {
   try {
-    const location = findLocation(req.body.siteLocationId);
     const model = String(req.body.model || "").trim();
     const fileName = path.basename(String(req.body.fileName || "").trim());
     const contentType = String(req.body.contentType || "application/octet-stream").trim();
     const version = String(req.body.version || "").trim();
     const notes = String(req.body.notes || "").trim();
     const fileData = String(req.body.fileData || "");
-
-    if (!location) {
-      res.status(400).json({ error: "Valid site location is required" });
-      return;
-    }
 
     if (!model) {
       res.status(400).json({ error: "Printer model is required" });
@@ -1365,14 +1388,11 @@ app.post("/api/drivers", async (req, res, next) => {
       return;
     }
 
-    const printers = await readPrinters(location);
     const knownModels = new Set(
-      printers
-        .map((printer) => String(printer.model || "").trim())
-        .filter(Boolean),
+      (await readKnownPrinterModels()).map((knownModel) => normalizeModelKey(knownModel)),
     );
 
-    if (!knownModels.has(model)) {
+    if (!knownModels.has(normalizeModelKey(model))) {
       res.status(400).json({ error: "Printer model must match one of the listed models" });
       return;
     }
@@ -1397,8 +1417,6 @@ app.post("/api/drivers", async (req, res, next) => {
     const drivers = await readDriverIndex();
     const driverRecord = {
       id: randomUUID(),
-      locationId: location.id,
-      locationName: location.name,
       model,
       version,
       notes,
@@ -1460,7 +1478,7 @@ app.get("/api/locations/:locationId/printers", async (req, res, next) => {
       readDriverIndex(),
     ]);
     const printersWithDrivers = printers.map((printer) => {
-      const driver = latestDriverForPrinter(drivers, location.id, printer.model);
+      const driver = latestDriverForPrinter(drivers, printer.model);
 
       return {
         ...printer,
