@@ -41,6 +41,10 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function jsStringAttr(value) {
+  return escapeHtml(JSON.stringify(String(value ?? "")));
+}
+
 function activeLocation() {
   return locations.find((location) => location.id === activeLocationId);
 }
@@ -155,7 +159,7 @@ function renderVncCell(printer) {
   }
 
   return `
-    <button type="button" class="btn btn-outline-primary open-vnc-button" data-printer-ip="${escapeHtml(printer.ip)}" data-printer-name="${escapeHtml(printer.name)}" title="Open browser VNC">
+    <button type="button" class="btn btn-outline-primary open-vnc-button" onclick="openVnc(${jsStringAttr(printer.ip)}, ${jsStringAttr(printer.name)}, this)" title="Open browser VNC">
       <i class="fa-solid fa-display"></i>
     </button>
   `;
@@ -292,7 +296,7 @@ function renderLocations() {
   locationContainer.innerHTML = locations
     .map(
       (location) => `
-        <button class="location-row ${location.id === activeLocationId ? "active" : ""}" type="button" data-location-id="${location.id}">
+        <button class="location-row ${location.id === activeLocationId ? "active" : ""}" type="button" onclick="loadPrinters(${jsStringAttr(location.id)})">
           <h2>${escapeHtml(location.name)}</h2>
         </button>
       `,
@@ -309,7 +313,7 @@ function renderLocations() {
             <button
               class="mobile-location-option ${location.id === activeLocationId ? "active" : ""}"
               type="button"
-              data-location-id="${escapeHtml(location.id)}"
+              onclick="selectMobileLocation(${jsStringAttr(location.id)})"
             >
               ${escapeHtml(location.name)}
             </button>
@@ -318,17 +322,11 @@ function renderLocations() {
         .join("")
     : '<span class="mobile-location-empty">No locations</span>';
   addLocationButton.parentElement.classList.remove("active");
+}
 
-  locationContainer.querySelectorAll(".location-row").forEach((button) => {
-    button.addEventListener("click", () => loadPrinters(button.dataset.locationId));
-  });
-
-  mobileLocationMenu.querySelectorAll(".mobile-location-option").forEach((button) => {
-    button.addEventListener("click", () => {
-      closeMobileLocationMenu();
-      loadPrinters(button.dataset.locationId).catch(console.error);
-    });
-  });
+function selectMobileLocation(locationId) {
+  closeMobileLocationMenu();
+  loadPrinters(locationId).catch(console.error);
 }
 
 function closeMobileLocationMenu() {
@@ -341,6 +339,10 @@ function toggleMobileLocationMenu() {
 
   mobileLocationMenu.hidden = isOpen;
   mobileLocationButton.setAttribute("aria-expanded", String(!isOpen));
+}
+
+function loadActivePrinters() {
+  loadPrinters(activeLocationId);
 }
 
 function renderVendor() {
@@ -366,7 +368,6 @@ function renderTable() {
         ${renderTableActions()}
       </div>
     `;
-    attachTableActions();
     return;
   }
 
@@ -406,7 +407,7 @@ function renderTable() {
                   <td data-label="Driver" class="driver-cell">${renderDriverCell(printer)}</td>
                   <td data-label="VNC" class="vnc-cell">${renderVncCell(printer)}</td>
                   <td data-label="Edit" class="action-cell">
-                    <button type="button" class="btn btn-success edit-printer-button" data-printer-id="${printer.id}" title="Edit printer">
+                    <button type="button" class="btn btn-success edit-printer-button" onclick="renderForm(${jsStringAttr(printer.id)})" title="Edit printer">
                       <i class="fa-solid fa-pen"></i>
                     </button>
                   </td>
@@ -420,29 +421,16 @@ function renderTable() {
     </div>
   `;
 
-  document.querySelectorAll(".edit-printer-button").forEach((button) => {
-    button.addEventListener("click", () => renderForm(button.dataset.printerId));
-  });
-  document.querySelectorAll(".open-vnc-button").forEach((button) => {
-    button.addEventListener("click", () => openVnc(button.dataset.printerIp, button.dataset.printerName, button));
-  });
-  attachTableActions();
 }
 
 function renderTableActions() {
   return `
     <div class="table-actions">
-      <button type="button" class="btn btn-primary" id="update-vendor-button">Update Vendor</button>
-      <button type="button" class="btn btn-info" id="download-location-button">Download Location</button>
-      <button type="button" class="btn btn-danger" id="delete-location-button">Delete Location</button>
+      <button type="button" class="btn btn-primary" id="update-vendor-button" onclick="renderVendorForm()">Update Vendor</button>
+      <button type="button" class="btn btn-info" id="download-location-button" onclick="downloadLocation()">Download Location</button>
+      <button type="button" class="btn btn-danger" id="delete-location-button" onclick="deleteLocation()">Delete Location</button>
     </div>
   `;
-}
-
-function attachTableActions() {
-  document.querySelector("#update-vendor-button")?.addEventListener("click", renderVendorForm);
-  document.querySelector("#download-location-button")?.addEventListener("click", downloadLocation);
-  document.querySelector("#delete-location-button")?.addEventListener("click", deleteLocation);
 }
 
 function renderForm(printerId = "") {
@@ -451,7 +439,7 @@ function renderForm(printerId = "") {
   const isEditing = Boolean(printerId);
 
   tableContainer.innerHTML = `
-    <form id="printer-form">
+    <form id="printer-form" onsubmit="handlePrinterSubmit(event, ${jsStringAttr(printerId)})">
       ${renderSiteLocationSelect(activeLocationId)}
       ${fields
         .map(
@@ -479,31 +467,24 @@ function renderForm(printerId = "") {
       <input type="hidden" id="statusCheckedAt" name="statusCheckedAt" value="${escapeHtml(printer.statusCheckedAt)}">
       <div class="detect-status" id="detect-printer-status"></div>
       <div class="button-con">
-        <button type="button" class="btn btn-info" id="detect-printer-button">
+        <button type="button" class="btn btn-info" id="detect-printer-button" onclick="detectPrinterFromForm()">
           <i class="fa-solid fa-magnifying-glass"></i> Detect
         </button>
+        <button type="button" class="btn btn-primary" id="back-button" onclick="renderTable()">Back</button>
         <button type="submit" class="btn btn-success">Submit</button>
-        <button type="button" class="btn btn-primary" id="back-button">Back</button>
         ${
           isEditing
-            ? '<button type="button" class="btn btn-danger" id="delete-button">Delete</button>'
+            ? `<button type="button" class="btn btn-danger" id="delete-button" onclick="deletePrinter(${jsStringAttr(printerId)})">Delete</button>`
             : ""
         }
       </div>
     </form>
   `;
+}
 
-  document.querySelector("#printer-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    savePrinter(printerId);
-  });
-
-  document.querySelector("#detect-printer-button").addEventListener("click", detectPrinterFromForm);
-  document.querySelector("#back-button").addEventListener("click", renderTable);
-
-  if (isEditing) {
-    document.querySelector("#delete-button").addEventListener("click", () => deletePrinter(printerId));
-  }
+function handlePrinterSubmit(event, printerId = "") {
+  event.preventDefault();
+  savePrinter(printerId);
 }
 
 async function detectPrinterFromForm() {
@@ -574,16 +555,16 @@ function ensureVncModal() {
           <span id="vnc-status" class="vnc-status">Disconnected</span>
         </div>
         <div class="vnc-toolbar-actions">
-          <button type="button" class="btn btn-outline-light" id="vnc-fullscreen-button" title="Fullscreen">
+          <button type="button" class="btn btn-outline-light" id="vnc-fullscreen-button" onclick="requestVncFullscreen()" title="Fullscreen">
             <i class="fa-solid fa-expand"></i>
           </button>
-          <button type="button" class="btn btn-danger" id="vnc-close-button" title="Close">
+          <button type="button" class="btn btn-danger" id="vnc-close-button" onclick="closeVncModal()" title="Close">
             <i class="fa-solid fa-xmark"></i>
           </button>
         </div>
       </div>
       <div class="vnc-password-panel" id="vnc-password-panel" hidden>
-        <form id="vnc-password-form" class="vnc-password-form">
+        <form id="vnc-password-form" class="vnc-password-form" onsubmit="submitVncCredentials(event)">
           <input type="text" class="form-control" id="vnc-username-input" autocomplete="username" placeholder="VNC username" hidden>
           <input type="password" class="form-control" id="vnc-password-input" autocomplete="current-password" placeholder="VNC password">
           <button type="submit" class="btn btn-primary">Connect</button>
@@ -594,34 +575,36 @@ function ensureVncModal() {
   `;
   document.body.appendChild(modal);
 
-  modal.querySelector("#vnc-close-button").addEventListener("click", closeVncModal);
   modal.addEventListener("click", (event) => {
     if (event.target === modal) {
       closeVncModal();
     }
   });
-  modal.querySelector("#vnc-fullscreen-button").addEventListener("click", () => {
-    modal.querySelector(".vnc-modal-panel").requestFullscreen?.();
-  });
-  modal.querySelector("#vnc-password-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    const passwordInput = modal.querySelector("#vnc-password-input");
-    const usernameInput = modal.querySelector("#vnc-username-input");
-    const passwordPanel = modal.querySelector("#vnc-password-panel");
-    const credentials = { password: passwordInput.value };
-
-    if (!usernameInput.hidden) {
-      credentials.username = usernameInput.value;
-    }
-
-    rfbClient?.sendCredentials(credentials);
-    passwordInput.value = "";
-    passwordPanel.hidden = true;
-    setVncStatus("Authenticating...");
-  });
 
   return modal;
+}
+
+function requestVncFullscreen() {
+  document.querySelector("#vnc-modal .vnc-modal-panel")?.requestFullscreen?.();
+}
+
+function submitVncCredentials(event) {
+  event.preventDefault();
+
+  const modal = document.querySelector("#vnc-modal");
+  const passwordInput = modal.querySelector("#vnc-password-input");
+  const usernameInput = modal.querySelector("#vnc-username-input");
+  const passwordPanel = modal.querySelector("#vnc-password-panel");
+  const credentials = { password: passwordInput.value };
+
+  if (!usernameInput.hidden) {
+    credentials.username = usernameInput.value;
+  }
+
+  rfbClient?.sendCredentials(credentials);
+  passwordInput.value = "";
+  passwordPanel.hidden = true;
+  setVncStatus("Authenticating...");
 }
 
 function setVncStatus(message) {
@@ -791,7 +774,7 @@ function renderLocationForm() {
   locationContainer.querySelectorAll(".location-row").forEach((row) => row.classList.remove("active"));
   addLocationButton.parentElement.classList.add("active");
   tableContainer.innerHTML = `
-    <form id="location-form" class="compact-form">
+    <form id="location-form" class="compact-form" onsubmit="handleLocationSubmit(event)">
       <div class="form-group">
         <label for="locationName">Location Name</label>
         <input
@@ -826,19 +809,17 @@ function renderLocationForm() {
         >
       </div>
       <div class="button-con">
+        <button type="button" class="btn btn-primary" id="back-button" onclick="loadActivePrinters()">Back</button>
         <button type="submit" class="btn btn-success">Submit</button>
-        <button type="button" class="btn btn-primary" id="back-button">Back</button>
       </div>
     </form>
   `;
-
-  document.querySelector("#location-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    saveLocation();
-  });
-
-  document.querySelector("#back-button").addEventListener("click", () => loadPrinters(activeLocationId));
   document.querySelector("#locationName").focus();
+}
+
+function handleLocationSubmit(event) {
+  event.preventDefault();
+  saveLocation();
 }
 
 function renderVendorForm() {
@@ -851,7 +832,7 @@ function renderVendorForm() {
 
   vendorTitle.textContent = `Update Vendor: ${location.name}`;
   tableContainer.innerHTML = `
-    <form id="vendor-form" class="compact-form">
+    <form id="vendor-form" class="compact-form" onsubmit="handleVendorSubmit(event)">
       <div class="form-group">
         <label for="vendorName">Vendor Name</label>
         <input
@@ -877,19 +858,17 @@ function renderVendorForm() {
         >
       </div>
       <div class="button-con">
+        <button type="button" class="btn btn-primary" id="back-button" onclick="loadActivePrinters()">Back</button>
         <button type="submit" class="btn btn-success">Submit</button>
-        <button type="button" class="btn btn-primary" id="back-button">Back</button>
       </div>
     </form>
   `;
-
-  document.querySelector("#vendor-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    saveVendor();
-  });
-
-  document.querySelector("#back-button").addEventListener("click", () => loadPrinters(activeLocationId));
   document.querySelector("#vendorName").focus();
+}
+
+function handleVendorSubmit(event) {
+  event.preventDefault();
+  saveVendor();
 }
 
 async function loadDriverModels() {
@@ -908,7 +887,7 @@ async function renderDriverForm() {
   vendorTitle.textContent = "Add Driver";
 
   tableContainer.innerHTML = `
-    <form id="driver-form" class="compact-form">
+    <form id="driver-form" class="compact-form" onsubmit="handleDriverSubmit(event)">
       ${renderDriverModelSelect()}
       <div class="form-group">
         <label for="driverVersion">Driver Version</label>
@@ -945,20 +924,19 @@ async function renderDriverForm() {
       </div>
       <div class="button-con">
         <button type="submit" class="btn btn-success" ${models.length ? "" : "disabled"}>Upload Driver</button>
-        <button type="button" class="btn btn-primary" id="back-button">Back</button>
+        <button type="button" class="btn btn-primary" id="back-button" onclick="loadActivePrinters()">Back</button>
       </div>
     </form>
   `;
 
-  document.querySelector("#driver-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await saveDriver();
-  });
-  document.querySelector("#back-button").addEventListener("click", () => loadPrinters(activeLocationId));
-
   if (models.length) {
     document.querySelector("#driverModel").focus();
   }
+}
+
+async function handleDriverSubmit(event) {
+  event.preventDefault();
+  await saveDriver();
 }
 
 function readFileAsDataUrl(file) {
@@ -1168,15 +1146,17 @@ async function deleteLocation() {
   }
 }
 
-addPrinterButton.addEventListener("click", () => renderForm());
-addDriverButton.addEventListener("click", () => {
+function renderDriverFormWithError() {
   renderDriverForm().catch((error) => {
     console.error(error);
     tableContainer.innerHTML = "<h2>Unable to load printer models.</h2>";
   });
-});
-addLocationButton.addEventListener("click", renderLocationForm);
-mobileLocationButton.addEventListener("click", toggleMobileLocationMenu);
+}
+
+function toggleDarkMode() {
+  applyDarkMode(!document.body.classList.contains("dark-mode"));
+}
+
 document.addEventListener("click", (event) => {
   if (
     !mobileLocationMenu.hidden
@@ -1185,9 +1165,6 @@ document.addEventListener("click", (event) => {
   ) {
     closeMobileLocationMenu();
   }
-});
-darkModeButton.addEventListener("click", () => {
-  applyDarkMode(!document.body.classList.contains("dark-mode"));
 });
 
 window.addEventListener("popstate", () => {

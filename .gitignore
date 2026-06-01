@@ -15,3 +15,5 @@ data/cleveland-toyota.json
 data/springwood-toyota.json
 drivers/index.json
 drivers/C5840/1777504255120-GPlus_PCL6_Driver_V340_W64_00-2-.zip
+
+.drivers/
